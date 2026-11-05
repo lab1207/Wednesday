@@ -76,6 +76,27 @@ Look for the `good first issue` label. The best entry points right now:
 5. **Never commit generated data.** No `node_modules`, `.venv`, logs, state,
    or build output.
 
+## How contributions flow (the repo model)
+
+This repository is an export of the private working tree, shipped as **one
+commit per release**. The export preserves normal git history: every
+release is a regular commit on `master`, and every merged PR is part of
+that history — no force-pushes, no rewrites.
+
+What that means for you as a contributor:
+
+1. Fork, branch from `master` (the tip commit is the current free-core
+   release), change, open a PR against `master`.
+2. Merges are real merges — your commits land in `master`'s history.
+3. No PR is lost between releases: each release re-exports the current
+   tree, so once merged your fix ships in every later build and stays in
+   history.
+4. Scope is the free core only: patches against closed or paid components
+   are out of scope — open an issue instead.
+
+Attribution and licence: your commits are part of the public history under
+Apache 2.0, as usual (below).
+
 ## Pull request checklist
 
 - [ ] The locked test prints PASS.
