@@ -225,9 +225,9 @@ if (args.has('--git')) {
   git(repo, ['-c', 'user.name=lab1207', '-c', 'user.email=hajarevaibhav527@gmail.com',
     'commit', '-q', '-m', `Wednesday ${releaseVersion} - free, open-source core (Apache 2.0)`])
   git(repo, ['push', '-q', 'origin', 'master'])
-  const sha = git(repo, ['rev-parse', 'HEAD']).slice(0, 7)
+  const sha = git(repo, ['rev-parse', 'HEAD'])
   git(repo, ['config', 'wednesday.lastPushedSha', sha])
-  console.log(`PUBLIC EXPORT: pushed ${sha} (normal push — history preserved)`)
+  console.log(`PUBLIC EXPORT: pushed ${sha.slice(0, 7)} (normal push — history preserved)`)
 }
 
 console.log(`PUBLIC EXPORT: PASS — ${copied} tracked files copied to ${relative(root, staging)}`)
