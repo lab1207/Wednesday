@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        # The Windows runtime pack is optional and platform-specific.
+        run: npm ci --omit=optional
+
+      - name: Locked dispatch test
+        run: node --import tsx factory/orchestrator/test.ts
+
+      - name: Provider route + seat pins
+        run: npm run factory:route
+
+      - name: First-run proof
+        run: npm run factory:proof
+
+      - name: Package surface
+        run: node --import tsx factory/security/package-surface-test.ts
+
+      - name: Secret redaction
+        run: node --import tsx factory/security/redaction-test.ts
+
+      - name: Approval gate + pipeline
+        run: node --import tsx factory/harness/harness-test.ts
+
+      - name: Live activity (answer stays the answer)
+        run: node --import tsx factory/executor/host-output-test.ts
+
+      - name: Status + doctor
+        run: node --import tsx factory/harness/status-doctor-test.ts
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --omit=optional
+      - name: Build tarball
+        run: npm pack --dry-run

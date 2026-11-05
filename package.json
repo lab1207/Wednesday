@@ -1,0 +1,110 @@
+{
+  "name": "@lab1207/wednesday",
+  "version": "0.2.0-beta.3",
+  "description": "Free, open-source terminal harness that staffs small open models as a coding team: plan, approve, build, real tests, repair until green.",
+  "license": "Apache-2.0",
+  "author": "Vaibhav Hajare (lab1207)",
+  "homepage": "https://wednesdaylabs.pages.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lab1207/Wednesday.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lab1207/Wednesday/issues"
+  },
+  "keywords": [
+    "ai",
+    "ai-agents",
+    "agentic-coding",
+    "coding-agent",
+    "coding-assistant",
+    "terminal",
+    "cli",
+    "tui",
+    "llm",
+    "local-llm",
+    "ollama",
+    "llama-cpp",
+    "openrouter",
+    "openai-compatible",
+    "code-generation",
+    "developer-tools",
+    "apache-2.0"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "wednesday": "bin/wednesday.js"
+  },
+  "files": [
+    "bin/",
+    "factory/",
+    "crewai/src/",
+    "crewai/pyproject.toml",
+    "ecc/",
+    "shared/config/",
+    "shared/schemas/",
+    "scripts/link-runtime.js",
+    "THIRD_PARTY_LICENSES.md",
+    "!factory/benchmark/",
+    "!factory/tmp/",
+    "!factory/provision-worker.ts",
+    "!factory/dsh-worker/deploy/",
+    "!factory/dsh-worker/start-remote-server.ps1",
+    "!factory/dsh-worker/pack-runtime.ts",
+    "!factory/**/*.jsonl",
+    "!factory/**/BUGS.md",
+    "!factory/**/*-test.ts",
+    "!factory/**/test.ts",
+    "!crewai/src/**/*_test.py",
+    "!**/__pycache__/",
+    "!**/*.pyc",
+    "!**/.venv/"
+  ],
+  "scripts": {
+    "wednesday": "node bin/wednesday.js",
+    "factory:test": "node --import tsx factory/orchestrator/test.ts",
+    "factory:connector": "node --import tsx factory/openhands/connector-test.ts",
+    "factory:interrupt": "node --import tsx factory/harness/interrupt-test.ts",
+    "factory:classic": "node --import tsx factory/harness/classic-ask-test.ts",
+    "factory:dispatch": "node --import tsx factory/harness/dispatch-test.ts",
+    "factory:views": "node --import tsx factory/harness/views-test.ts",
+    "factory:flags": "node --import tsx factory/harness/inline-flags-test.ts",
+    "factory:activity": "node --import tsx factory/executor/host-output-test.ts",
+    "factory:route": "node --import tsx factory/model-router/router-prefix-test.ts && node --import tsx factory/dsh-worker/provider-route-test.ts",
+    "factory:proof": "node --import tsx factory/harness/proof-test.ts",
+    "factory:status": "node --import tsx factory/harness/status-doctor-test.ts",
+    "factory:completion": "node --import tsx factory/harness/completion-test.ts",
+    "factory:paste": "node --import tsx factory/harness/paste-framing-test.ts",
+    "factory:search": "node --import tsx factory/harness/transcript-search-test.ts",
+    "tui:perf": "node --import tsx factory/harness/perf-test.ts",
+    "tui:session": "node --import tsx factory/harness/session-test.ts",
+    "tui:classic": "node --import tsx factory/harness/tui-test.ts",
+    "factory:harness:all": "node --import tsx factory/harness/harness-test.ts && node --import tsx factory/harness/proof-test.ts && node --import tsx factory/harness/repl-test.ts && node --import tsx factory/harness/dispatch-test.ts && node --import tsx factory/harness/views-test.ts && node --import tsx factory/harness/inline-flags-test.ts && node --import tsx factory/harness/perf-test.ts && node --import tsx factory/harness/interrupt-test.ts && node --import tsx factory/harness/classic-ask-test.ts && node --import tsx factory/harness/status-doctor-test.ts && node --import tsx factory/harness/completion-test.ts && node --import tsx factory/harness/paste-framing-test.ts && node --import tsx factory/harness/transcript-search-test.ts && node --import tsx factory/executor/host-output-test.ts",
+    "factory:harness": "node --import tsx factory/harness/harness-test.ts && node --import tsx factory/harness/repl-test.ts",
+    "tui:audit": "node --import tsx factory/harness/audit.ts",
+    "tui:keys": "node --import tsx factory/harness/keys-test.ts",
+    "tui:input": "node --import tsx factory/harness/input-protocol-test.ts",
+    "tui:fuzz": "node --import tsx factory/harness/fuzz-test.ts",
+    "tui:small": "node --import tsx factory/harness/small-preview.ts",
+    "tui:test": "node --import tsx factory/harness/screen-test.ts && node --import tsx factory/harness/patch-rows-test.ts && node --import tsx factory/harness/display-store-test.ts && node --import tsx factory/harness/palette-test.ts && node --import tsx factory/harness/keys-test.ts && node --import tsx factory/harness/input-protocol-test.ts && node --import tsx factory/harness/paste-framing-test.ts && node --import tsx factory/harness/transcript-search-test.ts && node --import tsx factory/harness/completion-test.ts && node --import tsx factory/harness/fuzz-test.ts && node --import tsx factory/harness/audit.ts && node --import tsx factory/harness/perf-test.ts && node --import tsx factory/harness/session-test.ts && node --import tsx factory/harness/tui-test.ts",
+    "tui:board": "node --import tsx factory/harness/preview.ts",
+    "plate:bake": "python scripts/bake-plate.py",
+    "postinstall": "node scripts/link-runtime.js"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-skill": "0.0.1-rc.3",
+    "@deepseek-ai/dsh-skill-filesystem": "0.0.1-rc.3",
+    "tsx": "4.23.13",
+    "undici": "^8.10.2"
+  },
+  "optionalDependencies": {
+    "@lab1207/wednesday-runtime-win32-x64": "0.1.0-dev.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

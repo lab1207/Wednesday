@@ -1,0 +1,16 @@
+# Generated / runtime — never commit
+node_modules/
+dist/
+*.tgz
+.env
+.env.*
+!.env.example
+logs/
+shared/state/*
+!shared/state/.gitkeep
+factory/tmp/
+factory/**/*.jsonl
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store

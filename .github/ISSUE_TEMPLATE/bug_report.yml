@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in Wednesday does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please redact API keys, tokens, and tunnel URLs
+        before pasting anything. Security issues go through SECURITY.md, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Wednesday version
+      description: Output of `wednesday --version`
+      placeholder: 0.2.0-beta.1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and Node version
+      placeholder: Windows 11, Node 24.4.0
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact command(s) and the smallest input that shows the bug
+      placeholder: |
+        1. wednesday "Create hello.txt ..."
+        2. Press y at the preview
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the receipt (`/result <id> --raw`) with secrets redacted
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste text rather than screenshots when possible
+    validations:
+      required: false

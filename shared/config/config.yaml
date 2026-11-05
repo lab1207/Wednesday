@@ -1,0 +1,28 @@
+﻿system:
+  name: "AI Software Factory"
+  environment: "development"
+  version: "0.1.0"
+
+architecture:
+  layers:
+    - factory_terminal_harness
+    - hermes
+    - openhands
+    - crewai
+    - ecc
+    - dsh
+    - openrouter
+
+paths:
+  workspace: "./workspace"
+  logs: "./logs"
+  docs: "./docs"
+
+services:
+  openrouter:
+    enabled: true
+    base_url: "https://openrouter.ai/api/v1"
+
+runtime:
+  event_bus: "local"
+  state_store: "local"

@@ -1,0 +1,32 @@
+﻿- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    workspaceContext: false
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+
+- id: subagent-acp
+  name: '@deepseek-ai/dsh-subagent-acp'
+  config:
+    providerName: acp
+    command: !!js process.execPath
+    args:
+      - !!js process.env.WEDNESDAY_ACP_WORKER
+      - --config
+      - !!js process.env.WEDNESDAY_WORKER_CONFIG
+    cwd: !!js process.env.DSH_FACTORY_TASK_WORKSPACE
+    permission: allow
+    env:
+      OPENROUTER_API_KEY: !!js process.env.OPENROUTER_API_KEY
+      DSH_LLM_PROVIDER: !!js process.env.DSH_LLM_PROVIDER
+      DSH_LLM_MODEL: !!js process.env.DSH_LLM_MODEL
+      LOCAL_LLM_API_KEY: !!js process.env.LOCAL_LLM_API_KEY
+      LOCAL_LLM_BASE_URL: !!js process.env.LOCAL_LLM_BASE_URL
+      ZEN_API_KEY: !!js process.env.ZEN_API_KEY
+      ZEN_BASE_URL: !!js process.env.ZEN_BASE_URL
+      NVIDIA_API_KEY: !!js process.env.NVIDIA_API_KEY
+      NVIDIA_BASE_URL: !!js process.env.NVIDIA_BASE_URL

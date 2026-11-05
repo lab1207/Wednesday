@@ -1,0 +1,11 @@
+{
+  "name": "sitebuild-landing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PedalWorks landing page - static bike-shop site (Wednesday website-build starting repository). Open public/index.html straight from disk.",
+  "scripts": {
+    "start": "node server/app.js",
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}

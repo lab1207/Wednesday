@@ -1,0 +1,8 @@
+﻿{
+  "event_id": "string",
+  "event_type": "string",
+  "timestamp": "string",
+  "source": "string",
+  "task_id": "string",
+  "payload": {}
+}

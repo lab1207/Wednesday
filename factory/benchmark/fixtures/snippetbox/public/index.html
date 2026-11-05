@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SnippetBox</title>
+</head>
+<body>
+  <h1>SnippetBox</h1>
+
+  <section id="login">
+    <h2>Log in</h2>
+    <form id="login-form">
+      <label>Username <input id="username" name="username" autocomplete="username" /></label>
+      <label>Password <input id="password" name="password" type="password" autocomplete="current-password" /></label>
+      <button type="submit">Log in</button>
+    </form>
+    <p id="login-error"></p>
+  </section>
+
+  <section id="notes" hidden>
+    <h2>Your notes</h2>
+    <form id="note-form">
+      <textarea id="note-content" placeholder="Write a note..."></textarea>
+      <button type="submit">Add note</button>
+    </form>
+    <ul id="note-list"></ul>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

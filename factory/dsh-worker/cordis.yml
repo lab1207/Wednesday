@@ -1,0 +1,168 @@
+﻿- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      openrouter:
+        displayName: OpenRouter
+        api: openai-completions
+        baseURL: https://openrouter.ai/api/v1
+        apiKeyEnv: OPENROUTER_API_KEY
+        models:
+          - id: !!js "String(process.env.DSH_LLM_MODEL ?? 'stealth/ox-alpha')"
+            # `openrouter/free` is a router, not one endpoint: it can land on a
+            # reasoning-mandatory free model that rejects a disabled reasoning
+            # request with 400. Sending no reasoning control lets each routed
+            # model apply its own default instead of pi-ai's `effort: "none"`.
+            reasoningEfforts: false
+      # Opt-in local route (`DSH_LLM_PROVIDER=local`): an OpenAI-compatible
+      # server such as Jan/llama.cpp. The server issues no credential, so the
+      # placeholder key only satisfies the client's bearer header.
+      local:
+        displayName: Local (Jan / llama.cpp)
+        api: openai-completions
+        baseURL: !!js "String(process.env.LOCAL_LLM_BASE_URL ?? 'http://127.0.0.1:1337/v1')"
+        apiKeyEnv: LOCAL_LLM_API_KEY
+        models:
+          - id: !!js "String(process.env.DSH_LLM_MODEL ?? 'Qwen3_5-4B-IQ4_XS')"
+            # Advertised capacity for the Colab-hosted 3B (13K window): the
+            # token meter prices session pressure against this, and
+            # compaction-basic scales its threshold from it.
+            contextWindow: 13312
+            reasoningEfforts: false
+      # OpenCode Zen route (`DSH_LLM_PROVIDER=zen`): OpenAI-compatible
+      # gateway (needs ZEN_API_KEY in the operator profile). Model id comes
+      # from DSH_LLM_MODEL like every other route.
+      zen:
+        displayName: OpenCode Zen
+        api: openai-completions
+        baseURL: !!js "String(process.env.ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1')"
+        apiKeyEnv: ZEN_API_KEY
+        models:
+          - id: !!js "String(process.env.DSH_LLM_MODEL ?? 'nemotron-3-ultra-free')"
+            reasoningEfforts: false
+      # NVIDIA NIM route (`DSH_LLM_PROVIDER=nvidia`, 2026-10-31
+      # provider-agnostic crews): OpenAI-compatible Build endpoint, needs
+      # NVIDIA_API_KEY. Without this block a crew seat pinned `nvidia/…`
+      # routed at the factory level but the coder worker had no such
+      # provider — the pin died here.
+      nvidia:
+        displayName: NVIDIA NIM
+        api: openai-completions
+        baseURL: !!js "String(process.env.NVIDIA_BASE_URL ?? 'https://integrate.api.nvidia.com/v1')"
+        apiKeyEnv: NVIDIA_API_KEY
+        models:
+          - id: !!js "String(process.env.DSH_LLM_MODEL ?? 'nvidia/nemotron-3.5-lightning-30b-a3b')"
+            reasoningEfforts: false
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    workspaceContext:
+      maxBytes: 16384
+
+# Request-pressure meter: prices session history against the routed model's
+# context window so compaction-basic knows when to summarize.
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+# Model-free head/middle/tail pruning of oversized tool results: shrinks
+# history without an LLM call, keeping the newest result verbatim.
+# V1.8 disposition (bsq6 finding: the 3B summarizer fails 7/8 live with
+# "no text summary content"): lean on this pruner under small models — the
+# tighter budgets below prune large tool results BEFORE pressure can trigger
+# an LLM summarization, so fewer turns ever need the unreliable 3B summary.
+# 2048 + marker (38) + 512 = 2598 <= 4096 passes plugin validation.
+- id: tool-result-pruner
+  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+  config:
+    thresholdChars: 4096
+    headChars: 2048
+    tailChars: 512
+
+# Token-pressure summarization for long sessions under the 13K ceiling:
+# compacts older history at 0.8 x context window, keeping a 2048-token
+# verbatim tail. Summarization reuses the routed model; failures warn and
+# continue the turn instead of failing the session.
+# V1.8 disposition: compactionRetries 0 = ONE summarization attempt per
+# trigger under the unreliable 3B (was 1 retry = up to 2 failing calls).
+# Overflow recovery is preserved via maxOverflowRetries 1 + the pruner-first
+# durable reduction above, which alone qualifies as retry progress. A
+# text-only summarizer prompt (strip tools from the summarization call so the
+# 3B cannot echo tool calls) needs an upstream dsh change — it breaks the
+# KV-cache-reuse design and needs snapshot coverage — so it stays deferred.
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  config:
+    thresholdRatio: 0.8
+    retainTokens: 2048
+    maxTokens: 1024
+    compactionRetries: 0
+
+- id: sandbox
+  name: '@deepseek-ai/dsh-sandbox-local'
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: !!js "process.env.DSH_PERMISSION_MODE ?? 'workspace-write'"
+    workspaceRoot: !!js "process.cwd()"
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: bash
+  name: '@deepseek-ai/dsh-bash-sandbox'
+  config:
+    timeoutMs: 60000
+
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: never
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+  config:
+    cwd: !!js "process.cwd()"
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+# Slice 1 of the capability plan (2026-09-21, reworked keyless): fetch-only
+# web tools. `web-fetch-http` is anonymous public HTTP(S) — no credential,
+# no key, pure Factory capability. `tool-web` runs with search disabled
+# (every search backend — Exa, Perplexity, DeepSeek — needs its own key by
+# design, so discovery stays out until the operator wants a key). The `web`
+# seam carries no provider pin: the single registered fetch provider
+# auto-selects. Known upstream limit: SSRF/private-network protection is
+# deferred in the fetch provider, so this stays a workspace-sandboxed
+# coding agent, never a deployment reaching sensitive internal targets.
+# DISABLED 2026-10-30: @deepseek-ai/dsh-web / dsh-web-fetch-http / dsh-tool-web
+# are not present in the provisioned runtime, so the worker's cordis plugin
+# tree failed to load and no task could complete. Re-enable when the packages
+# are available (web fetch capability is a nice-to-have, not a blocker).
+# - id: web
+#   name: '@deepseek-ai/dsh-web'
+#
+# - id: web-fetch-http
+#   name: '@deepseek-ai/dsh-web-fetch-http'
+#
+# - id: tool-web
+#   name: '@deepseek-ai/dsh-tool-web'
+#   config:
+#     search: false
+#     fetch: true
+#     searchTimeoutMs: 60000
+
+- id: acp
+  name: '@deepseek-ai/dsh-acp'
+  config:
+    # Explicit DSH_LLM_PROVIDER wins. LOCAL_LLM_BASE_URL is only the fallback
+    # when no provider was named: a profile keeps the local proxy URL after a
+    # switch to OpenRouter/NVIDIA, and the old expression forced every worker
+    # onto the keyless local route (2026-11-05 coder failure).
+    provider: !!js "String((process.env.DSH_LLM_PROVIDER ?? '').trim() || (process.env.LOCAL_LLM_BASE_URL ? 'local' : 'openrouter'))"
+    model: !!js "String(process.env.DSH_LLM_MODEL ?? 'stealth/ox-alpha')"

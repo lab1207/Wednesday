@@ -1,0 +1,11 @@
+{
+  "name": "snippetbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SnippetBox - small shared-notes SaaS (Wednesday V1.6 benchmark starting repository).",
+  "scripts": {
+    "start": "node server/app.js",
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "snippetbox-plus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SnippetBox-Plus - shared-notes SaaS with search and delete (Wednesday Relentless R3 harder starting repository).",
+  "scripts": {
+    "start": "node server/app.js",
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}
