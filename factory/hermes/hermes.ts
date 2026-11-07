@@ -219,38 +219,46 @@ async function status(): Promise<void> {
   const service =
     await createFactoryService()
 
-  const events =
-    await service.events(
-      task.engineeringTask.id,
+  // The service is disposed as soon as it has answered (2026-11-07): its
+  // skill filesystem watches every skill root it discovers, and those
+  // watchers keep the event loop alive. A CLI that cannot exit is a CLI
+  // nobody can use in a pipeline.
+  try {
+    const events =
+      await service.events(
+        task.engineeringTask.id,
+      )
+
+    const lastEvent =
+      events.length > 0
+        ? events[events.length - 1]
+        : undefined
+
+    console.log(
+      JSON.stringify(
+        {
+          taskId: task.id,
+          status: task.status,
+          supervisedBy: task.supervisor ?? 'unknown',
+          createdAt: task.createdAt,
+          updatedAt: task.updatedAt,
+          lastEvent: lastEvent
+            ? {
+                type: lastEvent.type,
+                role: lastEvent.role,
+                payload: lastEvent.payload,
+                timestamp: lastEvent.timestamp,
+              }
+            : undefined,
+          eventCount: events.length,
+        },
+        null,
+        2,
+      ),
     )
-
-  const lastEvent =
-    events.length > 0
-      ? events[events.length - 1]
-      : undefined
-
-  console.log(
-    JSON.stringify(
-      {
-        taskId: task.id,
-        status: task.status,
-        supervisedBy: task.supervisor ?? 'unknown',
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-        lastEvent: lastEvent
-          ? {
-              type: lastEvent.type,
-              role: lastEvent.role,
-              payload: lastEvent.payload,
-              timestamp: lastEvent.timestamp,
-            }
-          : undefined,
-        eventCount: events.length,
-      },
-      null,
-      2,
-    ),
-  )
+  } finally {
+    await service.dispose()
+  }
 }
 
 async function cancel(): Promise<void> {
@@ -378,23 +386,29 @@ async function events(): Promise<void> {
   const service =
     await createFactoryService()
 
-  const events =
-    await service.events(
-      task.engineeringTask.id,
-    )
+  // Disposed as soon as it has answered (2026-11-07) - see the status
+  // command above.
+  try {
+    const events =
+      await service.events(
+        task.engineeringTask.id,
+      )
 
-  console.log(
-    JSON.stringify(
-      {
-        taskId,
-        supervisedBy: task.supervisor ?? 'unknown',
-        eventCount: events.length,
-        events,
-      },
-      null,
-      2,
-    ),
-  )
+    console.log(
+      JSON.stringify(
+        {
+          taskId,
+          supervisedBy: task.supervisor ?? 'unknown',
+          eventCount: events.length,
+          events,
+        },
+        null,
+        2,
+      ),
+    )
+  } finally {
+    await service.dispose()
+  }
 }
 
 async function result(): Promise<void> {

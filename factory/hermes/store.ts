@@ -263,9 +263,19 @@ export async function runHermesTask(
   }
   runningControllers.set(hermesTaskId, controller)
 
+  // THE SERVICE MUST BE DISPOSED (2026-11-07).
+  //
+  // The service boots the DSH skill filesystem, and that filesystem watches
+  // every skill root it discovers — about twenty-three open handles per
+  // run. A one-shot process could not exit at all, and the long-running
+  // harness leaked a fresh set of watchers on EVERY run. Disposing the
+  // service closes them.
+  let disposable: { dispose(): Promise<void> } | undefined
+
   try {
     const { createFactoryService } = await import('../service')
     const service = await createFactoryService()
+    disposable = service
     const result =
       await service.run(
         record.engineeringTask,
@@ -342,5 +352,10 @@ export async function runHermesTask(
   } finally {
     runningControllers.delete(hermesTaskId)
     externalSignal?.removeEventListener('abort', forwardAbort)
+    try {
+      await disposable?.dispose()
+    } catch {
+      // A leaked handle is better than a failed run.
+    }
   }
 }

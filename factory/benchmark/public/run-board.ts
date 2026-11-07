@@ -16,7 +16,14 @@ import { loadConfig, requireLiveConfig } from '../../harness/config'
  * --samples K runs K independent attempts per problem (pass@k); the problem
  * passes when ANY sample passes, stopping early on the first pass.
  *
+ * --ablation ALSO runs the bare model on the same problems, with no factory
+ * around it, so the board can say what the factory ADDS (the solo pass rate
+ * beside the factory pass rate). It doubles the batch's spend, so it is
+ * opt-in. Boards that grade a repository fix (swebench*, multi-swe) cannot
+ * carry the bare arm and report that honestly instead of a fake zero.
+ *
  *   npx tsx factory/benchmark/public/run-board.ts --mode live --limit 10
+ *   npx tsx factory/benchmark/public/run-board.ts --board humaneval --mode live --limit 5 --ablation
  *
  * Deterministic mode (default) proves the loop plumbing offline with the
  * recording coder (expected red). Live mode runs the configured model
@@ -115,6 +122,12 @@ async function main(): Promise<void> {
     limit,
     offset,
     samples,
+    // THE ABLATION ARM (2026-11-05): `--ablation` also runs the BARE model
+    // on the same problems with no factory around it, so the board can say
+    // what the factory ADDS. Without the flag the arm does not run and the
+    // summary says nothing about it - an arm that always ran would double
+    // every batch's spend without being asked.
+    ablation: args.includes('--ablation'),
   })
 
   console.log(JSON.stringify({
@@ -127,6 +140,9 @@ async function main(): Promise<void> {
     totalTokens: summary.totalTokens,
     durationMs: summary.durationMs,
     batchDir: summary.batchDir,
+    // The ablation summary is null when the arm did not run (or the board
+    // cannot support it) - never a fake zero.
+    ablation: summary.ablation ?? null,
   }, null, 2))
 }
 

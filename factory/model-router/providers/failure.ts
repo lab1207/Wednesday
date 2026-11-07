@@ -12,7 +12,16 @@
  * The raw text is still recoverable: the error travels into the task record,
  * and `/result <id>` shows it. This function's job is only to make the error
  * message itself readable — status, what answered, and nothing else.
+ *
+ * REDACTION (2026-11-07, security review): this is the exit EVERY provider
+ * uses for an upstream body, and an upstream that echoes the Authorization
+ * header — or answers with a key-shaped token — would otherwise print a live
+ * credential on the operator's screen and into the task record. The
+ * redaction module exists for exactly this exit ("an API key echoed by a
+ * provider"), so it is applied here, once, for all of them.
  */
+
+import { redactSensitiveText } from '../../security/redaction'
 
 /** Is this body a document (rather than a JSON/text error payload)? */
 export function looksLikeHtml(text: string): boolean {
@@ -32,8 +41,12 @@ export function describeBody(body: string, max = 200): string {
       .exec(text)?.[1]
       ?.replace(/\s+/g, ' ')
       .trim()
-    return `an HTML page, not a model reply${title ? ` ("${title}")` : ''}`
+    return redactSensitiveText(
+      `an HTML page, not a model reply${title ? ` ("${title}")` : ''}`,
+    )
   }
   const oneLine = text.replace(/\s+/g, ' ')
-  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine
+  return redactSensitiveText(
+    oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine,
+  )
 }

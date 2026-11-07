@@ -4,13 +4,13 @@ Wednesday is free and open source (Apache 2.0). This is where the project is
 going and where help is most useful. Beta means the terminal is the product
 today; everything below is actively being worked on, not a promise of dates.
 
-## Now - beta `0.2.0-beta.3`
+## Now - beta `0.2.0-beta.4`
 
 Shipped and in daily use:
 
 - Terminal harness: plan → preview → approve → build → real tests → repair →
   review → receipt.
-- Fullscreen TUI, command palette, 21+ slash commands, pager.
+- Fullscreen TUI, command palette, 25 slash commands, pager.
 - `/connect`: OpenRouter, NVIDIA NIM, any OpenAI-compatible endpoint, local
   servers, tunnels, and the local proxy.
 - Named teams, engineering roles, per-seat model picks, repair budgets.
@@ -23,7 +23,11 @@ Shipped and in daily use:
 - **Desktop IDE** — a graphical shell around the same engine.
 - **Public benchmark ladder** — crew-only runs on public boards (HumanEval,
   aider polyglot, LiveCodeBench, SWE-bench Verified, EvalPlus, …) published
-  with full evidence. Results before marketing.
+  with full evidence. Results before marketing. The ladder now runs the
+  **solo arm** beside the factory arm — the same model, the same problems, no
+  factory around it — so a published score says what the factory *added*, and
+  boards that grade a repository fix say plainly that they cannot carry the
+  bare arm.
 - **Runtime packs for Linux and macOS** — the Windows pack already ships.
 - **Harness polish** — streamed coder tokens in build runs, richer review diffs.
 - **Accessibility** — screen-reader labels, high-contrast theme, reduced motion.

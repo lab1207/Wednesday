@@ -1,6 +1,6 @@
 {
   "name": "@lab1207/wednesday",
-  "version": "0.2.0-beta.3",
+  "version": "0.2.0-beta.4",
   "description": "Free, open-source terminal harness that staffs small open models as a coding team: plan, approve, build, real tests, repair until green.",
   "license": "Apache-2.0",
   "author": "Vaibhav Hajare (lab1207)",

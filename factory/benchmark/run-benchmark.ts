@@ -96,7 +96,9 @@ void main().catch((error: unknown) => {
   }, null, 2))
   process.exitCode = 1
 }).finally(() => {
-  // The cordis Context created inside createFactoryService() keeps the
-  // event loop alive; exit explicitly at the CLI boundary.
+  // CLI boundary: the benchmark leaves the event bus's file handle open, so
+  // the process is ended explicitly. The SERVICE's watchers are no longer
+  // part of that problem - the hermes store disposes the service it creates
+  // (2026-11-07), so nothing is torn down mid-close here.
   process.exit(process.exitCode ?? 0)
 })

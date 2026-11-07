@@ -40,6 +40,7 @@ import {
   ImpeccableAdapter,
   SkillAuthoringAdapter,
   ArchifyAdapter,
+  ProjectMemoryAdapter,
   CompositeSkillSource,
   KnowledgeBuilder,
 } from './knowledge'
@@ -214,6 +215,30 @@ async function main(): Promise<void> {
     },
   )
 
+  // THE CONTEXT MUST BE DISPOSED (2026-11-07).
+  //
+  // This is the ONE-SHOT path: the process runs a task, prints a receipt
+  // and is supposed to be gone. The DSH skill filesystem watches every
+  // skill root it discovers (about twenty-three open watchers), so
+  // without this the run finishes, prints its receipt, and the process
+  // sits there forever with the event loop held open. A CLI that never
+  // exits is a CLI nobody can use in a pipeline.
+  try {
+    await runWithContext(
+      ctx,
+      router,
+      options,
+    )
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+async function runWithContext(
+  ctx: Context,
+  router: ReturnType<typeof createModelRouter>,
+  options: ReturnType<typeof parseArgs>,
+): Promise<void> {
   const knowledgeBuilder =
     new KnowledgeBuilder(
       new CompositeSkillSource(
@@ -244,6 +269,11 @@ async function main(): Promise<void> {
             new OutputDisciplineAdapter(),
           ),
           new UiVerifyAdapter(),
+          // WHAT THE FACTORY LEARNED ABOUT THIS WORKSPACE (2026-11-05).
+          // Every other adapter is static doctrine - the same card for every
+          // workspace, every run - so the factory forgot everything between
+          // runs. This one carries the facts the last runs established here.
+          new ProjectMemoryAdapter(),
         ),
         new CompositeSkillSource(
           new CompositeSkillSource(

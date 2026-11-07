@@ -179,7 +179,8 @@ export function busyStatus(
   if (!at) return `${busyVerb(spin)}… · esc interrupts · type to queue`
   const stage = stageOf(at.role)
   const prefix = stage ? `${stage.index} ${stage.stage} · ` : ''
-  return `${prefix}${at.role}${at.detail ? ` · ${at.detail}` : ''} · esc interrupts · type to queue`
+  const seat = at.lane ? `${at.role} ${at.lane}` : at.role
+  return `${prefix}${seat}${at.detail ? ` · ${at.detail}` : ''} · esc interrupts · type to queue`
 }
 
 /**
@@ -1860,13 +1861,21 @@ export function chatLiveRow(
   answer: string,
   phase: 'reasoning' | 'answering',
   outcome: 'ok' | 'failed' = 'ok',
+  rate?: { tokensPerSecond: number },
 ): ScreenMessage {
   const tail = liveTail(reasoning)
+  // THE LIVE RATE (2026-11-07). OpenCode's footer carries a tokens/sec
+  // readout, and for a product built on small open models it is the most
+  // honest engagement signal there is: a spinner says "something is
+  // happening", a rate says "the model is producing 34 tokens a second".
+  // It is an ESTIMATE (the factory has no tokenizer for the served model),
+  // so it is marked as one wherever it is shown.
+  const speed = rate && rate.tokensPerSecond >= 1 ? ` · ${rate.tokensPerSecond} tok/s (est)` : ''
   const head = phase === 'answering'
-    ? `✻ thought${tail ? ` · ${tail}` : ''}`
+    ? `✻ thought${tail ? ` · ${tail}` : ''}${speed}`
     : outcome === 'failed'
-      ? `✻ stopped${tail ? ` · ${tail}` : ''}`
-      : `✻ thinking${tail ? ` · ${tail}` : ''}`
+      ? `✻ stopped${tail ? ` · ${tail}` : ''}${speed}`
+      : `✻ thinking${tail ? ` · ${tail}` : ''}${speed}`
   const body = answer ? `${glyph('rose')} ${answer}` : ''
   // A turn that was cut off mid-answer says so on its own line: a partial
   // answer that looks complete is worse than no answer.
@@ -2205,6 +2214,16 @@ export interface ScreenState {
 export interface CrewRow {
   /** Factory role id (`planner`, `coder`, `tester`, …). */
   role: string
+  /**
+   * The lane this seat runs in (`duel-0`, `vote-1`, `relay-2`).
+   *
+   * A team run puts several seats in the SAME role (two coder lanes in a
+   * duel, three reviewer ballots in a vote), and one row per role could only
+   * ever show the last of them. The lane label is the identity that keeps
+   * them apart: a lane row and a plain seat row of the same role are two
+   * different rows and never merge.
+   */
+  lane?: string
   phase: 'queued' | 'working' | 'verifying' | 'reviewing' | 'repairing' | 'done' | 'failed'
   /** Last concrete thing seen (`read_file`, `attempt 2`), not a restatement. */
   detail?: string
@@ -2223,6 +2242,22 @@ const CREW_GLYPH: Record<CrewRow['phase'], { glyph: string; tone: MsgTone }> = {
 }
 
 /**
+ * The lane facts a lane event carries (pure).
+ *
+ * The bus is authoritative: a field that is missing is missing, never
+ * invented. The payload may arrive as the event payload itself or as the
+ * whole event, so both shapes are read the same way.
+ */
+function laneFacts(payload?: Record<string, unknown>): Record<string, unknown> {
+  if (!payload) return {}
+  const inner = payload.payload
+  if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+    return inner as Record<string, unknown>
+  }
+  return payload
+}
+
+/**
  * Fold one Factory event into the crew dock. Pure: the caller owns the array,
  * which keeps the transition rules assertable without a live run.
  *
@@ -2230,13 +2265,39 @@ const CREW_GLYPH: Record<CrewRow['phase'], { glyph: string; tone: MsgTone }> = {
  * a seat done; a later `task.failed` flips every live seat to failed, because
  * "the run died" is the truth the dock should end on — not a row of green
  * checks above a red result card.
+ *
+ * `payload` carries the lane facts of a team event (`lane`, `model`, `role`,
+ * `ok`, `score`, `detail`); it is optional, so every seat-only event folds
+ * exactly as before.
  */
-export function crewUpdate(rows: CrewRow[], type: string, role?: string, detail?: string, status?: string): CrewRow[] {
+export function crewUpdate(
+  rows: CrewRow[],
+  type: string,
+  role?: string,
+  detail?: string,
+  status?: string,
+  payload?: Record<string, unknown>,
+): CrewRow[] {
   const now = Date.now()
-  const upsert = (name: string, phase: CrewRow['phase'], extra?: string): void => {
-    const existing = rows.find(row => row.role === name)
+  // A lane row and a seat row are different animals: the lane label is part
+  // of the identity, so a plain `coder` seat never absorbs `coder duel-0`.
+  const sameLane = (row: CrewRow, lane?: string): boolean =>
+    (row.lane ?? undefined) === (lane ?? undefined)
+  const upsert = (
+    name: string,
+    phase: CrewRow['phase'],
+    extra?: string,
+    lane?: string,
+  ): void => {
+    const existing = rows.find(row => row.role === name && sameLane(row, lane))
     if (!existing) {
-      rows.push({ role: name, phase, detail: extra, startedAt: now })
+      rows.push({
+        role: name,
+        ...(lane ? { lane } : {}),
+        phase,
+        detail: extra,
+        startedAt: now,
+      })
       return
     }
     // A phase change restarts the clock; a detail-only update does not.
@@ -2280,8 +2341,9 @@ export function crewUpdate(rows: CrewRow[], type: string, role?: string, detail?
   if (type === 'repair.started') { upsert(role ?? 'planner', 'repairing', detail); return rows }
   if (type === 'tool.called' && role) {
     // Tool activity refines a live row; it never creates one (a tool can only
-    // run inside a seat that already started).
-    const row = rows.find(r => r.role === role)
+    // run inside a seat that already started). The plain seat row wins: a
+    // lane row is driven by the lane events, not by one seat's tool calls.
+    const row = rows.find(r => r.role === role && r.lane === undefined) ?? rows.find(r => r.role === role)
     if (row && row.phase !== 'done' && row.phase !== 'failed') {
       row.phase = 'working'
       if (detail) row.detail = detail
@@ -2292,10 +2354,64 @@ export function crewUpdate(rows: CrewRow[], type: string, role?: string, detail?
     // Live activity refines the seat's row the same way a tool call does: the
     // dock says WHAT the seat is doing right now, so the header is never a
     // bare spinner while a model thinks.
-    const row = rows.find(r => r.role === role)
+    const row = rows.find(r => r.role === role && r.lane === undefined) ?? rows.find(r => r.role === role)
     if (row && row.phase !== 'done' && row.phase !== 'failed' && detail) {
       row.detail = detail
     }
+    return rows
+  }
+  if (
+    type === 'lane.started' ||
+    type === 'lane.completed' ||
+    type === 'lane.scored'
+  ) {
+    // Team lanes: several seats share one role, so the lane label is the
+    // identity. `coder duel-0` and a plain `coder` seat are two rows and
+    // never merge into one.
+    const facts = laneFacts(payload)
+    const lane =
+      typeof facts.lane === 'string' && facts.lane.trim()
+        ? facts.lane.trim()
+        : undefined
+    const laneRole =
+      typeof facts.role === 'string' && facts.role.trim()
+        ? facts.role.trim()
+        : (role ?? 'agent')
+    const model =
+      typeof facts.model === 'string' ? facts.model.trim() : ''
+    if (type === 'lane.started') {
+      upsert(laneRole, 'working', model || 'default model', lane)
+      return rows
+    }
+    if (type === 'lane.completed') {
+      // A lane that already carries a richer detail (its score) keeps it.
+      const current = rows.find(
+        row => row.role === laneRole && sameLane(row, lane),
+      )
+      const extra = current?.detail ? undefined : (model || undefined)
+      upsert(laneRole, facts.ok === true ? 'done' : 'failed', extra, lane)
+      return rows
+    }
+    // lane.scored: the grade is the last concrete thing the row can say. It
+    // never invents a verdict, so the phase stays what the lane actually did.
+    const score =
+      typeof facts.score === 'number' && Number.isFinite(facts.score)
+        ? facts.score
+        : null
+    const note =
+      typeof facts.detail === 'string' ? facts.detail.trim() : ''
+    const text =
+      score === null
+        ? (note || 'no score')
+        : (note ? `${score} - ${note}` : String(score))
+    const current = rows.find(
+      row => row.role === laneRole && sameLane(row, lane),
+    )
+    if (!current) {
+      upsert(laneRole, 'done', text, lane)
+      return rows
+    }
+    current.detail = text
     return rows
   }
   if (type === 'task.completed') { settle('done'); return rows }
@@ -2330,7 +2446,7 @@ export function crewStripRows(state: ScreenState, width: number, height: number,
     : `▸ ${rows.length} seat${rows.length === 1 ? '' : 's'} settled`
   // Collapsed form: one row, naming the busiest seats rather than hiding them.
   if (height < 30 || w < 64) {
-    const names = liveCrew(rows).map(row => row.role).slice(0, 3).join(', ')
+    const names = liveCrew(rows).map(row => row.lane ? `${row.role} ${row.lane}` : row.role).slice(0, 3).join(', ')
     const tail = names ? ` · ${names}` : ''
     return [clipVisible(`${summary}${tail}`, w)]
   }
@@ -2339,12 +2455,15 @@ export function crewStripRows(state: ScreenState, width: number, height: number,
   // bug in the caller, and the row count must not eat the transcript.
   for (const row of rows.slice(0, 4)) {
     const g = CREW_GLYPH[row.phase]
+    // A lane row names its lane: `coder duel-0` is one seat of a duel, not
+    // the coder seat.
+    const label = row.lane ? `${row.role} ${row.lane}` : row.role
     const elapsed = row.phase === 'working' || row.phase === 'verifying' || row.phase === 'reviewing' || row.phase === 'repairing'
       ? formatElapsed(now - (row.startedAt ?? now))
       : ''
     const detail = row.detail ? ` · ${row.detail}` : ''
-    const plain = `  ${g.glyph} ${row.role.padEnd(10)} ${row.phase}${detail}`
-    const text = `  ${tone(g.tone, g.glyph)} ${tone('plain', row.role.padEnd(10))} ${tone(g.tone === 'green' || g.tone === 'red' ? g.tone : 'dim', row.phase)}${tone('dim', detail)}`
+    const plain = `  ${g.glyph} ${label.padEnd(14)} ${row.phase}${detail}`
+    const text = `  ${tone(g.tone, g.glyph)} ${tone('plain', label.padEnd(14))} ${tone(g.tone === 'green' || g.tone === 'red' ? g.tone : 'dim', row.phase)}${tone('dim', detail)}`
     out.push(clipVisible(elapsed && visibleWidth(plain) + elapsed.length + 1 <= w ? `${text}${tone('dim', ` ${elapsed}`)}` : text, w))
   }
   return out
@@ -4184,6 +4303,25 @@ export class Screen {
     state.messages[index] = marked
     if (state.scroll > 0) state.scroll = Math.max(0, state.scroll + (after - before))
     this.render(state)
+  }
+
+  /**
+   * The attention bell (2026-11-07).
+   *
+   * The bytes go through the screen's OWN writer, never through
+   * process.stdout: the screen owns an alternate buffer, and a raw write to
+   * a different handle can land in the middle of a painted frame.
+   *
+   * A bell that cannot be written is not an error. It is a courtesy, and a
+   * courtesy must never be the thing that breaks a run.
+   */
+  bell(bytes: string): void {
+    if (!bytes) return
+    try {
+      this.out.write(bytes)
+    } catch {
+      // A closed terminal is not a failure the operator can act on.
+    }
   }
 
   /** Transient notice (opencode toast grammar): shown until next push. */

@@ -50,6 +50,12 @@ import {
 } from '../paths'
 
 import {
+  KILL_GRACE_MS,
+  groupSpawnOptions,
+  killProcessTree,
+} from '../dsh-worker/process-tree'
+
+import {
   WorkspaceWatcher,
 } from './workspace-watch'
 
@@ -541,6 +547,10 @@ export class FactoryExecutor {
               ],
               windowsHide:
                 true,
+              // The host spawns the worker as a child; the worker inherits the
+              // pipes. On POSIX the child is its own group leader, so the
+              // whole tree can be signalled when the run is cut short.
+              ...groupSpawnOptions(),
             },
           )
 
@@ -549,11 +559,32 @@ export class FactoryExecutor {
         // every exit path; on fire the child is killed and the close handler
         // below reports an executor timeout.
         let timedOut = false
+        let hardTimer: NodeJS.Timeout | undefined
+        let graceTimer: NodeJS.Timeout | undefined
         const hostTimeoutMs = this.timeoutMs
         const hostTimer = setTimeout(
           () => {
             timedOut = true
-            child.kill()
+            // THE WHOLE TREE (2026-11-07).
+            //
+            // The host spawns the DSH worker as a child and the worker
+            // inherits the host's stderr. Killing the host alone left the
+            // worker alive and holding the pipe, so `close` never fired and
+            // the run waited forever — the same freeze the operator reported
+            // from `/proof`. The tree kill reaches the worker.
+            killProcessTree(child)
+            // The kill is BEST EFFORT. If the tree is already gone, or the
+            // OS refuses the kill, no `exit` event may ever arrive — and a
+            // run that waits for one is the hang this whole change exists
+            // to remove. The deadline settles the run itself, shortly after
+            // the kill, on the same path a normal exit takes.
+            //
+            // The timer is NOT unref'd: an unref'd deadline does not keep
+            // the loop alive, so the run could be abandoned mid-await
+            // instead of producing a receipt.
+            hardTimer = setTimeout(() => {
+              child.emit('close', null, 'SIGKILL')
+            }, KILL_GRACE_MS)
           },
           hostTimeoutMs,
         )
@@ -618,9 +649,23 @@ export class FactoryExecutor {
           },
         )
 
+        // THE RECEIPT MUST ARRIVE, WHATEVER THE PROCESS TREE DOES (2026-11-07).
+        //
+        // `close` waits for the PIPES, and the pipes belong to the tree: the
+        // DSH worker inherits the host's stderr, so a worker that outlived
+        // its host kept the pipe open and `close` never fired. The run then
+        // waited forever — the same freeze the operator reported from
+        // `/proof`. The process EXIT settles the receipt too (see below),
+        // after a short grace that lets the last output line land.
+        let settled = false
+
         child.on(
           'error',
           error => {
+            if (settled) return
+            settled = true
+            if (hardTimer) clearTimeout(hardTimer)
+            if (graceTimer) clearTimeout(graceTimer)
             clearTimeout(hostTimer)
             signal?.removeEventListener('abort', onAbort)
             watcher.stop()
@@ -648,6 +693,10 @@ export class FactoryExecutor {
         child.on(
           'close',
           code => {
+            if (settled) return
+            settled = true
+            if (hardTimer) clearTimeout(hardTimer)
+            if (graceTimer) clearTimeout(graceTimer)
             clearTimeout(hostTimer)
             signal?.removeEventListener('abort', onAbort)
             watcher.stop()
@@ -872,6 +921,29 @@ export class FactoryExecutor {
             )
           },
         )
+
+        // THE EXIT FALLBACK (2026-11-07).
+        //
+        // `close` waits for the PIPES, and the pipes belong to the process
+        // TREE: the DSH worker inherits the host's stderr, so a worker that
+        // outlived its host kept them open and `close` never fired. The run
+        // then waited forever — the same freeze the operator reported from
+        // `/proof`. When the PROCESS exits, the run must settle even if a
+        // grandchild still holds the pipe. Re-emitting `close` keeps ONE
+        // settlement path, so the receipt can never disagree with itself.
+        child.on('exit', code => {
+          if (settled) return
+          // NOT unref'd: an unref'd grace does not keep the loop alive, so
+          // the run could be abandoned mid-await instead of producing a
+          // receipt.
+          graceTimer = setTimeout(
+            () => {
+              if (settled) return
+              child.emit('close', code, null)
+            },
+            KILL_GRACE_MS,
+          )
+        })
       },
     )
   }

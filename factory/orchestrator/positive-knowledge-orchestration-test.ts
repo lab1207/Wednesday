@@ -56,16 +56,6 @@ class RecordingRunner {
 
 async function main(): Promise<void> {
   // ------------------------------------------------------------
-  // Model router
-  // ------------------------------------------------------------
-
-  const router = new RegistryModelRouter()
-
-  router.register(
-    new OpenRouterProvider(),
-  )
-
-  // ------------------------------------------------------------
   // DSH skill environment
   // ------------------------------------------------------------
 
@@ -81,6 +71,32 @@ async function main(): Promise<void> {
       agentsHome:
         DSH_AGENTS_HOME,
     },
+  )
+
+  // THE CONTEXT MUST BE DISPOSED (2026-11-07).
+  //
+  // This test used to call `process.exit(0)` at the end, with the skill
+  // filesystem's watchers still open. A forced exit tears those handles
+  // down mid-close, and libuv asserts on it: the process died with
+  // 0xC0000409 instead of exiting 0, and whether it happened depended on
+  // the machine's mood. Disposing the fiber closes the watchers properly
+  // and the process exits on its own, clean.
+  try {
+    await runProbe(ctx)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+async function runProbe(ctx: Context): Promise<void> {
+  // ------------------------------------------------------------
+  // Model router
+  // ------------------------------------------------------------
+
+  const router = new RegistryModelRouter()
+
+  router.register(
+    new OpenRouterProvider(),
   )
 
   const knowledgeBuilder =
@@ -209,9 +225,8 @@ async function main(): Promise<void> {
     ),
   )
 
-  // One-shot boundary (bridge.ts precedent): the cordis Context outlives the
-  // probe — exit explicitly so this stays an exit-0 offline proof.
-  process.exit(0)
+  // The context is disposed by the caller (main), so the process exits on
+  // its own with the watchers closed - no forced exit, no libuv assert.
 }
 
 void main().catch(

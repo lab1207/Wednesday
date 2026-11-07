@@ -30,6 +30,22 @@ async function main(): Promise<void> {
     agentsHome: DSH_AGENTS_HOME,
   })
 
+  // THE CONTEXT MUST BE DISPOSED (2026-11-06).
+  //
+  // This test used to leave the cordis context running, so the process
+  // NEVER EXITED: the test failed (or passed) and then sat there forever,
+  // holding the event loop open. A sweep that ran it HUNG - and a hung
+  // sweep is a sweep that never reports, which is worse than a red one.
+  //
+  // `ctx.fiber.dispose()` unloads the plugins and releases the handles.
+  try {
+    await runAnalysis(registry, ctx)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+async function runAnalysis(registry: AgentRegistry, ctx: Context): Promise<void> {
   const knowledgeBuilder = new KnowledgeBuilder(
     new DshSkillAdapter(ctx),
   )

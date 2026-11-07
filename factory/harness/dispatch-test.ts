@@ -228,6 +228,30 @@ async function main(): Promise<void> {
     assert.deepEqual(rec.errors, [], 'help then exit is clean')
   }
 
+  // 3b. `/team` and `/templates` (2026-11-05): the team's POLICY and the
+  //     saved requests. Both are new commands, so both must run on the screen
+  //     path without throwing and must say something honest when there is
+  //     nothing to show.
+  {
+    const rec = await drive([
+      '/team', '/team shape duel', '/team repairs 2', '/team tokens 50000',
+      '/team usd 0.25', '/team test "npm test"', '/team files src/a.ts,src/b.ts',
+      '/team shape nonsense', '/team reset',
+      '/templates', '/templates save demo', '/templates show demo',
+      '/templates delete demo', '/templates',
+    ])
+    const fatal = rec.errors.filter(e => /is not defined|is not a function|undefined is not/.test(e))
+    assert.deepEqual(fatal, [], 'the new commands reach no undefined reference')
+    assert.ok(
+      rec.notes.some(n => /No active team/.test(n)),
+      'with no team, /team says so instead of printing a blank policy',
+    )
+    assert.ok(
+      rec.notes.some(n => /No templates yet/.test(n)),
+      'with no templates, /templates says so instead of printing nothing',
+    )
+  }
+
   // 4. Empty and whitespace lines are no-ops: no approval, no error, no note.
   //    (The `/` plate lives in the COMPOSER's ask loop, not in this dispatch
   //    layer — a bare `/` arriving here really is an unknown command, which is
@@ -328,8 +352,12 @@ async function main(): Promise<void> {
     assert.equal(process.env.FACTORY_CREW_CODER_MODEL, 'acme/coder-small', 'the model plate seat row writes its slot from a plate pick')
     assert.equal(process.env.FACTORY_CREW_PLANNER_MODEL, 'example/model', 'trio fills only the seat without an override')
     assert.ok(rec.notes.includes('vision seat = acme/vision-small'), 'a seat write leaves a named receipt')
-    assert.ok(rec.notes.some(n => n === 'crew: trio · planner example/model · coder example/model · vision acme/vision-small'),
-      'the trio receipt names the kept override, not the route it hoped for')
+    // 2026-11-05: the crew has SIX seats now (architect, planner, coder,
+    // tester, reviewer, vision), so the receipt names the seats that DEVIATE
+    // from the route and counts the ones that ride it - six names in a row
+    // said the same thing six times.
+    assert.ok(rec.notes.some(n => n === 'crew: trio · 5 on example/model · vision acme/vision-small'),
+      'the trio receipt names the kept override, not the route it hoped for: ' + JSON.stringify(rec.notes))
     assert.ok(rec.progress.some(p => p === 'crew → trio'), 'a profile pick toasts on the screen path')
   })
 

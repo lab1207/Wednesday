@@ -12,6 +12,11 @@ import {
   seatModelPin,
 } from '../model-router'
 
+import {
+  describeJsonFailure,
+  parseJsonLoose,
+} from '../model-router/json-repair'
+
 import type {
   ReviewResult,
 } from './types'
@@ -1122,16 +1127,84 @@ export class TestingRunner
   }
 }
 
-function parseReviewerResponse(
+/**
+ * The reviewer's verdict and, when there is none, WHY there is none.
+ *
+ * A muted reviewer is worse than a wrong one: the seat had an answer and
+ * the run dropped it on the floor, so the operator saw a silent seat
+ * instead of a broken parse. The outcome carries the reason so the caller
+ * can put it in the receipt.
+ */
+export interface ReviewerParseOutcome {
+  /** The parsed verdict, when the answer carried one. */
+  review?: ReviewResult
+  /** Why the answer carried no verdict (absent when it did). */
+  failure?: string
+}
+
+/**
+ * Shape a parsed verdict into the review result every caller expects.
+ *
+ * Strings, always: the callers below and in the orchestrator call string
+ * methods on every entry (B149).
+ */
+function toReviewResult(
+  parsed: Partial<ReviewResult>,
+  verdict: ReviewResult['verdict'],
+): ReviewResult {
+  return {
+    verdict:
+      verdict,
+
+    summary:
+      typeof parsed.summary ===
+      'string'
+        ? parsed.summary
+        : '',
+
+    findings:
+      toStringList(
+        parsed.findings,
+      ),
+
+    requiredChanges:
+      toStringList(
+        parsed.requiredChanges,
+      ),
+
+    evidence:
+      toStringList(
+        parsed.evidence,
+      ),
+  }
+}
+
+/**
+ * Parse the reviewer's answer (2026-11-06).
+ *
+ * The strict path is UNCHANGED: a well-formed answer parses exactly as it
+ * always did, byte for byte. When the strict path finds nothing, the
+ * SHARED salvage path (`parseJsonLoose`) gets a turn - a small model that
+ * wrapped its verdict in a markdown fence, in single quotes, or in prose
+ * used to have its verdict dropped on the floor. When even that finds
+ * nothing, the REASON is recorded (`describeJsonFailure`) instead of being
+ * swallowed, so the reviewer seat is never mute without an explanation.
+ */
+export function parseReviewerOutcome(
   text: string,
-): ReviewResult | undefined {
+): ReviewerParseOutcome {
   const raw =
     text.trim()
 
   if (
     raw.length === 0
   ) {
-    return undefined
+    return {
+      failure:
+        describeJsonFailure(
+          text,
+        ),
+    }
   }
 
   const candidates: string[] = [
@@ -1200,18 +1273,20 @@ function parseReviewerResponse(
     )
   ) {
     return {
-      verdict:
-        'pass',
-      summary:
-        raw,
-      findings: [],
-      requiredChanges: [],
-      evidence: [
-        limitText(
+      review: {
+        verdict:
+          'pass',
+        summary:
           raw,
-          2000,
-        ),
-      ],
+        findings: [],
+        requiredChanges: [],
+        evidence: [
+          limitText(
+            raw,
+            2000,
+          ),
+        ],
+      },
     }
   }
 
@@ -1221,22 +1296,29 @@ function parseReviewerResponse(
     )
   ) {
     return {
-      verdict:
-        'fail',
-      summary:
-        raw,
-      findings: [
-        limitText(
+      review: {
+        verdict:
+          'fail',
+        summary:
           raw,
-          2000,
-        ),
-      ],
-      requiredChanges: [
-        'Reviewer returned FAIL without structured required changes.',
-      ],
-      evidence: [],
+        findings: [
+          limitText(
+            raw,
+            2000,
+          ),
+        ],
+        requiredChanges: [
+          'Reviewer returned FAIL without structured required changes.',
+        ],
+        evidence: [],
+      },
     }
   }
+
+  // Did any candidate parse as JSON at all? A parse that carries no
+  // verdict is a different failure from a parse that failed, and the
+  // operator deserves to be told which one happened.
+  let sawJson = false
 
   for (
     const candidate of candidates
@@ -1248,6 +1330,14 @@ function parseReviewerResponse(
         ) as Partial<ReviewResult>
 
       if (
+        typeof parsed ===
+          'object' &&
+        parsed !== null
+      ) {
+        sawJson = true
+      }
+
+      if (
         parsed.verdict !==
           'pass' &&
         parsed.verdict !==
@@ -1257,30 +1347,10 @@ function parseReviewerResponse(
       }
 
       return {
-        verdict:
-          parsed.verdict,
-
-        summary:
-          typeof parsed.summary ===
-          'string'
-            ? parsed.summary
-            : '',
-
-        // Strings, always: the callers below and in the orchestrator call
-        // string methods on every entry (B149).
-        findings:
-          toStringList(
-            parsed.findings,
-          ),
-
-        requiredChanges:
-          toStringList(
-            parsed.requiredChanges,
-          ),
-
-        evidence:
-          toStringList(
-            parsed.evidence,
+        review:
+          toReviewResult(
+            parsed,
+            parsed.verdict,
           ),
       }
     } catch {
@@ -1288,7 +1358,59 @@ function parseReviewerResponse(
     }
   }
 
-  return undefined
+  // The salvage path: markdown fences, single-quoted strings, prose around
+  // the payload, a payload that was cut off mid-flight. Same helper the
+  // model router uses, so the reviewer and the router agree on what a
+  // recoverable answer looks like.
+  const loose =
+    parseJsonLoose<Partial<ReviewResult>>(
+      raw,
+    )
+
+  if (
+    loose !== null &&
+    typeof loose === 'object'
+  ) {
+    sawJson = true
+
+    if (
+      loose.verdict ===
+        'pass' ||
+      loose.verdict ===
+        'fail'
+    ) {
+      return {
+        review:
+          toReviewResult(
+            loose,
+            loose.verdict,
+          ),
+      }
+    }
+  }
+
+  return {
+    failure:
+      sawJson
+        ? 'reviewer JSON parsed but carried no usable verdict (expected "pass" or "fail").'
+        : describeJsonFailure(
+            text,
+          ),
+  }
+}
+
+/**
+ * The reviewer's verdict, or undefined when the answer carried none.
+ *
+ * The signature and the return shape are the ones the callers depend on:
+ * undefined means "no verdict". The REASON now travels beside it
+ * (`parseReviewerOutcome`), so the reviewer seat is never mute without an
+ * explanation.
+ */
+function parseReviewerResponse(
+  text: string,
+): ReviewResult | undefined {
+  return parseReviewerOutcome(text).review
 }
 
 /**
@@ -1444,14 +1566,19 @@ export class ReviewRunner
               : (
                   await this.router.complete(
                     // Same catalog rule as the main verdict: checklist
-                    // judges type JSON on the coder, never the planner.
-                    // Crew seat pin (2026-10-31): provider-prefixed ids
-                    // route per call when the seat set one.
+                    // judges type JSON on the coding route, never the
+                    // reasoning route.
+                    // Crew seat pin (2026-11-06): the specialists judge
+                    // FOR the reviewer, so they run on the REVIEWER's own
+                    // model when the crew staffs one - and on the coder
+                    // slot's model when it does not (legacy, unchanged).
                     {
                       capability: 'coding',
-                      ...(seatModelPin(task.role ?? 'coder')
-                        ? { preferredModel: seatModelPin(task.role ?? 'coder') }
+                      ...(seatModelPin('reviewer')
+                        ? { preferredModel: seatModelPin('reviewer') }
                         : {}),
+                      // The tokens belong to the reviewer seat.
+                      seat: 'reviewer',
                     },
                     prompt,
                   )
@@ -1609,9 +1736,16 @@ export class ReviewRunner
           // structured parse — the coder types the verdict.
           capability:
             'coding',
+          // The reviewer is a SEAT (2026-11-06): its own model when the
+          // crew staffs one, the coder slot's model when it does not
+          // (legacy - an unchanged profile behaves exactly as before).
           ...(seatModelPin(role.id)
             ? { preferredModel: seatModelPin(role.id) }
             : {}),
+          // The seat name rides along so the provider attributes the
+          // tokens to the teammate that spent them.
+          seat:
+            'reviewer',
         },
         reviewPrompt,
         // The reviewer thinks too: its reasoning is the operator's window into
@@ -1626,10 +1760,13 @@ export class ReviewRunner
         },
       )
 
-    const review =
-      parseReviewerResponse(
+    const outcome =
+      parseReviewerOutcome(
         response.text,
       )
+
+    const review =
+      outcome.review
 
     if (
       review ===
@@ -1656,8 +1793,11 @@ export class ReviewRunner
           'Retry reviewer using the exact JSON contract.',
         ],
 
+        // The REASON the verdict was lost rides into the receipt
+        // (2026-11-06): a muted reviewer says WHY it was mute, so the
+        // operator reads a broken parse instead of a silent seat.
         blockingIssues: [
-          'Reviewer output was not valid JSON or PASS/FAIL.',
+          `Reviewer output was not valid JSON or PASS/FAIL: ${outcome.failure ?? 'unknown parse failure'}`,
         ],
 
         review:
@@ -1717,9 +1857,18 @@ export class ReadOnlyModelRunner
             {}),
           capability:
             'reasoning',
+          // The seat's own model (2026-11-06): a seat that runs a model
+          // here uses its own crew model when the crew staffs one (the
+          // tester seat on `FACTORY_CREW_TESTER_MODEL`), and the coder
+          // slot's model when it does not (legacy - an unchanged profile
+          // behaves exactly as before).
           ...(seatModelPin(role.id)
             ? { preferredModel: seatModelPin(role.id) }
             : {}),
+          // The seat name rides along so the provider attributes the
+          // tokens to the teammate that spent them.
+          seat:
+            role.id,
         },
         [
           buildIdentitySection(),

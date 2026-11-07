@@ -67,15 +67,25 @@ async function main(): Promise<void> {
     assert.ok(Date.now() - started < 2000, 'parallel scan, not serial timeouts')
   }
 
-  // 4. Default candidates are the five known loopback ports
+  // 4. Default candidates are the known loopback ports.
+  //
+  //    vLLM (:8000) was added on 2026-11-05 because the README and the site
+  //    CLAIMED vLLM auto-detection while the harness scan did not probe it —
+  //    the model layer knew the port, the harness did not. The claim is now
+  //    true in the code, and this test is what keeps it true: if the port
+  //    is ever dropped again, the published copy is a lie and this fails.
   {
     const candidates = defaultLocalCandidates()
-    assert.equal(candidates.length, 5)
+    assert.equal(candidates.length, 6)
     assert.ok(candidates.some(c => c.baseURL.includes('11434')), 'ollama port included')
+    assert.ok(candidates.some(c => c.baseURL.includes('1234')), 'lm studio port included')
+    assert.ok(candidates.some(c => c.baseURL.includes('8080')), 'llama.cpp port included')
+    assert.ok(candidates.some(c => c.baseURL.includes('8000')), 'vLLM port included')
+    assert.ok(candidates.some(c => c.baseURL.includes('1337')), 'generic local port included')
     assert.ok(candidates.some(c => c.baseURL.includes('18090')), 'wednesday proxy port included')
   }
 
-  console.log('LOCAL DISCOVERY TEST: PASS (openai shape, ollama shape, dead ports excluded in parallel, default candidates)')
+  console.log('LOCAL DISCOVERY TEST: PASS (openai shape, ollama shape, dead ports excluded in parallel, default candidates incl. vLLM :8000)')
 }
 
 main().catch(error => {

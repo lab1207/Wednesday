@@ -88,14 +88,98 @@ function anchorScore(rows: { board: PublicBoardId; metric: string; score: number
   return rows.find(r => r.board === board && r.metric === metric)?.score ?? null
 }
 
-const MODEL_COLUMNS: ModelColumn[] = [
-  { id: 'factory', label: 'Wednesday', sub: 'live runs · qwen2.5-coder-3b', highlight: true, value: () => null },
-  { id: 'official', label: '3B as-is', sub: 'maker published', value: b => anchorScore(QWEN_3B_OFFICIAL, b, primaryMetric(b)) },
-  { id: 'repro', label: '3B as-is', sub: 'independent test', value: b => anchorScore(QWEN_3B_REPRO, b, 'HumanEval pass@1') },
-  { id: 'qwen7b', label: 'Qwen 7B', sub: 'published', value: b => anchorScore(MARKET_ANCHORS.filter(r => r.model.includes('qwen2.5-coder-7b')), b, primaryMetric(b)) },
-  { id: 'qwen32b', label: 'Qwen 32B', sub: 'published', value: b => anchorScore(CEILING_ANCHORS.filter(r => r.model.includes('32b')), b, primaryMetric(b)) },
-  { id: 'gpt4o', label: 'GPT-4o', sub: 'published', value: b => anchorScore(CEILING_ANCHORS.filter(r => r.model.includes('gpt-4o')), b, primaryMetric(b)) },
-]
+/** The latest LIVE batch of a board (batch ids sort chronologically). */
+function latestLiveBatch(batches: BatchInfo[]): BatchInfo | undefined {
+  return batches
+    .filter(batch => batch.summary.mode === 'live')
+    .sort((a, b) => a.batchId.localeCompare(b.batchId))
+    .at(-1)
+}
+
+/**
+ * The latest live batch that carries a SOLO arm (the ablation).
+ *
+ * A batch without ablation data is not a zero — it is no data — so the
+ * ablation is looked up in the recorded batches instead of being faked.
+ */
+function latestAblationBatch(batches: BatchInfo[]): BatchInfo | undefined {
+  return batches
+    .filter(batch => batch.summary.mode === 'live' && (batch.summary.ablation?.soloTotal ?? 0) > 0)
+    .sort((a, b) => a.batchId.localeCompare(b.batchId))
+    .at(-1)
+}
+
+/** The REAL Wednesday score of a board: its latest recorded live batch. */
+function factoryScore(board: PublicBoardId, batches: BatchInfo[]): number | null {
+  const latest = latestLiveBatch(batches)
+  if (!latest || latest.summary.total <= 0) return null
+  return latest.summary.passed / latest.summary.total
+}
+
+/** The bare model's score of a board (the SOLO arm of a recorded batch). */
+function soloScore(board: PublicBoardId, batches: BatchInfo[]): number | null {
+  const ablation = latestAblationBatch(batches)?.summary.ablation
+  if (!ablation || ablation.soloTotal <= 0) return null
+  return ablation.soloPassRate
+}
+
+/**
+ * The sub-label of the Wednesday column: the model the recorded live
+ * batches actually ran. Never a hardcoded model name.
+ */
+function factoryColumnSub(latestByBoard: Map<PublicBoardId, BatchInfo[]>): string {
+  const models = new Set<string>()
+  for (const row of BOARD_ROWS) {
+    const model = (latestLiveBatch(latestByBoard.get(row.board) ?? [])?.summary.model ?? '').trim()
+    if (model) models.add(model)
+  }
+  if (models.size === 0) return 'live runs · none recorded yet'
+  if (models.size === 1) return `live runs · ${[...models][0]}`
+  return 'live runs · mixed models'
+}
+
+/**
+ * The columns of the head-to-head table.
+ *
+ * The 'factory' column reads the REAL recorded Wednesday score (the
+ * latest live batch summary for that board). It used to return null, so
+ * the highlighted column was always empty — the board could only say
+ * "the Factory ran and got X", never show it.
+ *
+ * The 'solo' column is the ablation: the SAME model on the SAME problems
+ * with NO Factory. It appears only when some board carries ablation data,
+ * and its cell is EMPTY (never a fake zero) for boards that do not.
+ */
+function modelColumns(latestByBoard: Map<PublicBoardId, BatchInfo[]>): ModelColumn[] {
+  const columns: ModelColumn[] = [
+    {
+      id: 'factory',
+      label: 'Wednesday',
+      sub: factoryColumnSub(latestByBoard),
+      highlight: true,
+      value: board => factoryScore(board, latestByBoard.get(board) ?? []),
+    },
+  ]
+  const hasSolo = BOARD_ROWS.some(
+    row => soloScore(row.board, latestByBoard.get(row.board) ?? []) !== null,
+  )
+  if (hasSolo) {
+    columns.push({
+      id: 'solo',
+      label: 'Solo',
+      sub: 'bare model · no Factory',
+      value: board => soloScore(board, latestByBoard.get(board) ?? []),
+    })
+  }
+  columns.push(
+    { id: 'official', label: '3B as-is', sub: 'maker published', value: b => anchorScore(QWEN_3B_OFFICIAL, b, primaryMetric(b)) },
+    { id: 'repro', label: '3B as-is', sub: 'independent test', value: b => anchorScore(QWEN_3B_REPRO, b, 'HumanEval pass@1') },
+    { id: 'qwen7b', label: 'Qwen 7B', sub: 'published', value: b => anchorScore(MARKET_ANCHORS.filter(r => r.model.includes('qwen2.5-coder-7b')), b, primaryMetric(b)) },
+    { id: 'qwen32b', label: 'Qwen 32B', sub: 'published', value: b => anchorScore(CEILING_ANCHORS.filter(r => r.model.includes('32b')), b, primaryMetric(b)) },
+    { id: 'gpt4o', label: 'GPT-4o', sub: 'published', value: b => anchorScore(CEILING_ANCHORS.filter(r => r.model.includes('gpt-4o')), b, primaryMetric(b)) },
+  )
+  return columns
+}
 
 function primaryMetric(board: PublicBoardId): string {
   if (board === 'humaneval') return 'HumanEval HE pass@1'
@@ -127,9 +211,10 @@ const BOARD_ROWS: BoardRow[] = [
 ]
 
 function matrixTable(latestByBoard: Map<PublicBoardId, BatchInfo[]>): string {
+  const columns = modelColumns(latestByBoard)
   const head = [
     '<tr><th></th>',
-    ...MODEL_COLUMNS.map(col =>
+    ...columns.map(col =>
       `<th${col.highlight === true ? ' class="ours"' : ''}>${esc(col.label)}<span class="colsub">${esc(col.sub)}</span></th>`,
     ),
     '</tr>',
@@ -140,18 +225,23 @@ function matrixTable(latestByBoard: Map<PublicBoardId, BatchInfo[]>): string {
   for (const row of BOARD_ROWS) {
     if (row.section !== lastSection) {
       lastSection = row.section
-      body.push(`<tr class="section"><td colspan="${MODEL_COLUMNS.length + 1}">${esc(row.section)}</td></tr>`)
+      body.push(`<tr class="section"><td colspan="${columns.length + 1}">${esc(row.section)}</td></tr>`)
     }
-    const live = (latestByBoard.get(row.board) ?? [])
-      .filter(b => b.summary.mode === 'live')
-      .sort((a, b) => a.batchId.localeCompare(b.batchId))
-    const latest = live.at(-1)
-    const factory = latest ? latest.summary.passed / Math.max(1, latest.summary.total) : null
-    const factoryNote = latest ? `our live run, n=${latest.summary.total}` : 'not run live yet'
-    const cells = MODEL_COLUMNS.map(col => ({
-      col,
-      value: col.id === 'factory' ? factory : col.value(row.board),
-    }))
+    const batches = latestByBoard.get(row.board) ?? []
+    const live = latestLiveBatch(batches)
+    const factoryNote = live ? `our live run, n=${live.summary.total}` : 'not run live yet'
+    const soloBatch = latestAblationBatch(batches)
+    const soloNote = soloBatch
+      ? `bare model, no Factory — n=${soloBatch.summary.ablation?.soloTotal ?? 0} (run of ${formatBatchDate(soloBatch.batchId)})`
+      : 'no ablation recorded for this board'
+    const cells = columns.map(col => {
+      const note = col.id === 'factory'
+        ? factoryNote
+        : col.id === 'solo'
+          ? soloNote
+          : 'published number — never re-run'
+      return { col, value: col.value(row.board), note }
+    })
     const best = Math.max(...cells.map(cell => cell.value ?? -1))
     const tds = cells.map(cell => {
       const text = cell.value === null ? '—' : (cell.value * 100).toFixed(1)
@@ -159,14 +249,11 @@ function matrixTable(latestByBoard: Map<PublicBoardId, BatchInfo[]>): string {
         cell.col.highlight === true ? 'ours' : '',
         cell.value !== null && cell.value === best && best >= 0 ? 'best' : '',
       ].filter(Boolean).join(' ')
-      const title = cell.col.id === 'factory' ? factoryNote : 'published number — never re-run'
-      return `<td><span${classes ? ` class="${classes}"` : ''} title="${esc(title)}">${text}</span></td>`
+      return `<td><span${classes ? ` class="${classes}"` : ''} title="${esc(cell.note)}">${text}</span></td>`
     })
-    const smoke = latest !== undefined && latest.summary.total <= 5 && row.board !== 'humaneval'
+    const smoke = live !== undefined && live.summary.total <= 5
       ? ' · smoke sample'
-      : latest !== undefined && latest.summary.total <= 5
-        ? ' · smoke sample'
-        : ''
+      : ''
     body.push(
       `<tr><td class="rowname">${esc(row.plain)}<span class="colsub">${esc(row.sub)}${smoke}</span></td>${tds.join('')}</tr>`,
     )
@@ -174,15 +261,8 @@ function matrixTable(latestByBoard: Map<PublicBoardId, BatchInfo[]>): string {
   return `<div class="table-wrap"><table>\n${head}\n${body.join('\n')}\n</table></div>`
 }
 
-function latestLive(latestByBoard: Map<PublicBoardId, BatchInfo[]>, board: PublicBoardId): BatchInfo | undefined {
-  return (latestByBoard.get(board) ?? [])
-    .filter(b => b.summary.mode === 'live')
-    .sort((a, b) => a.batchId.localeCompare(b.batchId))
-    .at(-1)
-}
-
 /** One honest sentence per board: what it tests plus the latest live number. */
-function boardNarrative(row: BoardRow, latest: BatchInfo | undefined): string {
+function boardNarrative(row: BoardRow, latest: BatchInfo | undefined, soloBatch: BatchInfo | undefined): string {
   const open = '<p class="text-dim" style="font-size: 0.88rem; margin-bottom: 16px;">'
   if (!latest) {
     return `${open}Tests ${esc(row.tests)}. No live run yet — the gray columns are published single-model numbers.</p>`
@@ -191,7 +271,14 @@ function boardNarrative(row: BoardRow, latest: BatchInfo | undefined): string {
   const pct = (rate * 100).toFixed(1)
   const cls = rate >= 1 ? 'text-ok' : 'text-bad'
   const smoke = latest.summary.total <= 5 ? ' (smoke sample: proves the pipeline, not a citable score)' : ''
-  return `${open}Tests ${esc(row.tests)}. Latest live run: <strong class="${cls}">${latest.summary.passed}/${latest.summary.total} (${pct}%)</strong> — ${esc(formatBatchDate(latest.batchId))}${esc(smoke)}.</p>`
+  // The ablation sentence: what the SAME model got with NO Factory, and
+  // what the Factory got on the same problems. This is the product's
+  // claim, so it is stated with both numbers or not at all.
+  const ablation = soloBatch?.summary.ablation
+  const soloLine = ablation && ablation.soloTotal > 0
+    ? ` SOLO arm (same model, same problems, no Factory): <strong>${ablation.soloPassed}/${ablation.soloTotal} (${(ablation.soloPassRate * 100).toFixed(1)}%)</strong> — the Factory got ${ablation.factoryPassed}/${ablation.factoryTotal} (${(ablation.factoryPassRate * 100).toFixed(1)}%) on those same problems; tokens ${ablation.factoryTokens.toLocaleString()} (Factory) vs ${ablation.soloTokens.toLocaleString()} (solo).`
+    : ''
+  return `${open}Tests ${esc(row.tests)}. Latest live run: <strong class="${cls}">${latest.summary.passed}/${latest.summary.total} (${pct}%)</strong> — ${esc(formatBatchDate(latest.batchId))}${esc(smoke)}.${soloLine}</p>`
 }
 
 function chartBars(board: PublicBoardId, pairs: Array<{ label: string; sub: string; value: number | null; ours?: boolean }>): string {
@@ -216,10 +303,15 @@ function chartBars(board: PublicBoardId, pairs: Array<{ label: string; sub: stri
   return `<svg viewBox="0 0 760 ${height}" role="img" aria-label="${esc(board)} scores chart" style="width: 100%; height: auto;">${rows.join('')}</svg>`
 }
 
-function boardSection(row: BoardRow, latest: BatchInfo | undefined): string {
-  const factory = latest ? latest.summary.passed / Math.max(1, latest.summary.total) : null
+function boardSection(row: BoardRow, batches: BatchInfo[]): string {
+  const latest = latestLiveBatch(batches)
+  const soloBatch = latestAblationBatch(batches)
+  const ablation = soloBatch?.summary.ablation
+  const solo = ablation && ablation.soloTotal > 0 ? ablation.soloPassRate : null
+  const model = (latest?.summary.model ?? '').trim()
   const chart = chartBars(row.board, [
-    { label: 'Wednesday', sub: 'live runs · qwen2.5-coder-3b', value: factory, ours: true },
+    { label: 'Wednesday', sub: model ? `live runs · ${model}` : 'live runs', value: factoryScore(row.board, batches), ours: true },
+    { label: 'Solo', sub: 'bare model · no Factory', value: solo },
     { label: '3B as-is', sub: 'maker published', value: anchorScore(QWEN_3B_OFFICIAL, row.board, primaryMetric(row.board)) },
     { label: '3B as-is', sub: 'independent test', value: row.board === 'humaneval' ? anchorScore(QWEN_3B_REPRO, row.board, 'HumanEval pass@1') : null },
     { label: 'Qwen 7B', sub: 'published', value: anchorScore(MARKET_ANCHORS.filter(r => r.model.includes('qwen2.5-coder-7b')), row.board, primaryMetric(row.board)) },
@@ -228,7 +320,7 @@ function boardSection(row: BoardRow, latest: BatchInfo | undefined): string {
   ])
   return [
     `<h3 style="font-size: 1rem; font-weight: 600; margin: 32px 0 8px;">${esc(row.plain)}</h3>`,
-    boardNarrative(row, latest),
+    boardNarrative(row, latest, soloBatch),
     chart ? `<div class="card" style="padding: 20px;">${chart}</div>` : '',
   ].join('\n')
 }
@@ -253,9 +345,21 @@ function historyTable(batches: BatchInfo[]): string {
     .slice()
     .sort((a, b) => b.batchId.localeCompare(a.batchId))
     .slice(0, 10)
-    .map(b => `<tr><td class="rowname">${esc(b.board)}</td><td>${esc(formatBatchDate(b.batchId))}</td><td>${esc(b.summary.mode)}</td><td>${b.summary.passed}/${b.summary.total}</td><td>${b.summary.totalTokens.toLocaleString()} tok</td><td>${esc(formatDuration(b.summary.durationMs))}</td></tr>`)
+    .map(b => {
+      // The SOLO column is the ablation: the bare model's score next to
+      // the Factory's, and the delta between them. A batch without an
+      // ablation shows '—' (no data), never a zero.
+      const ablation = b.summary.ablation
+      const hasAblation = (ablation?.soloTotal ?? 0) > 0
+      const solo = hasAblation ? `${ablation?.soloPassed}/${ablation?.soloTotal}` : '—'
+      const delta = hasAblation
+        ? `${(((ablation?.factoryPassRate ?? 0) - (ablation?.soloPassRate ?? 0)) * 100).toFixed(1)}pp`
+        : '—'
+      const tokens = (b.summary.totalTokens ?? 0).toLocaleString()
+      return `<tr><td class="rowname">${esc(b.board)}</td><td>${esc(formatBatchDate(b.batchId))}</td><td>${esc(b.summary.mode)}</td><td>${b.summary.passed}/${b.summary.total}</td><td>${esc(solo)}</td><td>${esc(delta)}</td><td>${esc(tokens)} tok</td><td>${esc(formatDuration(b.summary.durationMs))}</td></tr>`
+    })
     .join('\n')
-  return `<div class="table-wrap"><table><tr><th>Board</th><th>Run</th><th>Mode</th><th>Pass</th><th>Tokens</th><th>Time</th></tr>${rows}</table></div>`
+  return `<div class="table-wrap"><table><tr><th>Board</th><th>Run</th><th>Mode</th><th>Pass</th><th>Solo</th><th>&Delta;</th><th>Tokens</th><th>Time</th></tr>${rows}</table></div>`
 }
 
 interface LanguageScore {
@@ -451,11 +555,33 @@ export function libraryMetadata(model: string, batches: BatchInfo[], generatedAt
   }
 }
 
-function modelCardRow(titleModel: string): string {
+/**
+ * The context window of the latest recorded live batch.
+ *
+ * It comes from `BoardSummary.serving.contextWindow` — the window the
+ * model registry knows for the model that actually ran. `null` means
+ * unknown, and unknown is shown as "unknown", never as a guess.
+ */
+function recordedContextWindow(batches: BatchInfo[]): number | null {
+  const latest = latestLiveBatch(batches)
+  const serving = latest?.summary.serving as { contextWindow?: number | null } | undefined
+  const window = serving?.contextWindow
+  return typeof window === 'number' && window > 0 ? window : null
+}
+
+/** 32768 -> '32K'; unknown -> 'unknown' (never a guess). */
+export function formatContextWindow(tokens: number | null): string {
+  if (tokens === null || !Number.isFinite(tokens) || tokens <= 0) return 'unknown'
+  if (tokens >= 1024) return `${Math.round(tokens / 1024)}K`
+  return String(tokens)
+}
+
+function modelCardRow(titleModel: string, contextWindow: number | null): string {
+  const context = esc(formatContextWindow(contextWindow))
   if (titleModel === 'qwen2.5-coder-3b-instruct') {
-    return '<tr><td>qwen2.5-coder-3b-instruct</td><td>3.09B</td><td>36</td><td>32K</td><td>Qwen Research</td></tr>'
+    return `<tr><td>qwen2.5-coder-3b-instruct</td><td>3.09B</td><td>36</td><td>${context}</td><td>Qwen Research</td></tr>`
   }
-  return `<tr><td>${esc(titleModel)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`
+  return `<tr><td>${esc(titleModel)}</td><td>—</td><td>—</td><td>${context}</td><td>—</td></tr>`
 }
 
 /** Single shared stylesheet for all generated pages (no pasted copies). */
@@ -1014,6 +1140,20 @@ export async function renderScoreboard(
     list.push(batch)
     byBoard.set(batch.board, list)
   }
+  // The live config, taken from the recorded batches — never a hardcoded
+  // model name (a page that names a model it did not run is a lie).
+  const liveModels = new Set<string>()
+  for (const batch of batches) {
+    if (batch.summary.mode !== 'live') continue
+    const recorded = (batch.summary.model ?? '').trim()
+    if (recorded) liveModels.add(recorded)
+  }
+  const liveConfig = liveModels.size === 0
+    ? 'no live batch recorded yet'
+    : liveModels.size === 1
+      ? `${[...liveModels][0]} (from the recorded live batches)`
+      : `${liveModels.size} models across the recorded live batches`
+  const contextWindow = recordedContextWindow(batches)
   return [
     '<!doctype html>',
     '<html lang="en">',
@@ -1030,7 +1170,7 @@ export async function renderScoreboard(
     '  <div class="hero-label">Public Benchmark · Small-Model Crew</div>',
     `  <h1>Wednesday × ${esc(titleModel)}</h1>`,
     '  <p class="lede">One small model alone loses to a frontier model — honestly shown in gray. <span class="text-acc">Amber is the Wednesday crew</span> (planner + coder + vision, verified and repaired) running the same public boards under the same rules.</p>',
-    `  <p class="text-mute" style="font-size: 0.82rem; margin-top: 16px;">Live config today: qwen2.5-coder-3b solo pipeline — Crew 1 trio rows land with the trio. Every gray bar is a published single-model number we never re-run. Generated ${esc(generatedAt)} — re-generated after every live round.</p>`,
+    `  <p class="text-mute" style="font-size: 0.82rem; margin-top: 16px;">Live config today: ${esc(liveConfig)}. Every gray bar is a published single-model number we never re-run; every amber bar is a number from our own recorded batch summaries. Generated ${esc(generatedAt)} — re-generated after every live round.</p>`,
     '  <p style="margin-top: 20px;"><a href="./index.html" class="text-dim" style="font-size: 0.88rem;">← Wednesday</a> · <a href="./models/index.html" class="text-dim" style="font-size: 0.88rem;">Model library</a></p>',
     '</section>',
     `<!--wednesday-library ${JSON.stringify(libraryMetadata(model ?? 'all models', batches, generatedAt))} -->`,
@@ -1039,10 +1179,10 @@ export async function renderScoreboard(
     '    <div class="table-wrap">',
     '      <table>',
     '        <tr><th>Model under test</th><th>Params</th><th>Layers</th><th>Context</th><th>License</th></tr>',
-    `        ${modelCardRow(titleModel)}`,
+    `        ${modelCardRow(titleModel, contextWindow)}`,
     '      </table>',
     '    </div>',
-    '    <p class="text-mute" style="font-size: 0.82rem; margin-top: 12px;">The small model inside every Wednesday run on this page. Qwen specs: Qwen2.5-Coder tech report.</p>',
+    '    <p class="text-mute" style="font-size: 0.82rem; margin-top: 12px;">The small model inside every Wednesday run on this page. Context is the recorded window of the model that ran (unknown when the batch did not record one). Qwen specs: Qwen2.5-Coder tech report.</p>',
     '  </div>',
     '</section>',
     '<section class="section" style="padding-top: 0;">',
@@ -1056,7 +1196,7 @@ export async function renderScoreboard(
     '  <div class="wrap">',
     '    <div class="section-label">Charts</div>',
     '    <h2>By board</h2>',
-    ...BOARD_ROWS.flatMap(row => [boardSection(row, latestLive(byBoard, row.board))]),
+    ...BOARD_ROWS.flatMap(row => [boardSection(row, byBoard.get(row.board) ?? [])]),
     languageChart('Aider by language (latest live batch)', await aiderLanguageScores(home)),
     '  </div>',
     '</section>',
@@ -1076,6 +1216,7 @@ export async function renderScoreboard(
     '<li><strong>Official</strong> = the model maker\u2019s published score (their harness).</li>',
     '<li><strong>Repro</strong> = third-party reproduction (different harness — the gap under test).</li>',
     '<li><strong>Wednesday</strong> = live runs of the Wednesday crew through the pipeline (Hermes → roles → board grader). Models are interchangeable parts; the crew is the product.</li>',
+    '<li><strong>Solo</strong> = the ablation: the SAME model, the SAME problems, the SAME grader — with NO Factory (no verification, no reviewer, no repair loop, no team). The gap between Solo and Wednesday is what the Factory adds. An empty Solo cell means no ablation was recorded — never a zero.</li>',
     '<li><strong>Crew vs single</strong> = one small model alone loses to a frontier model — honestly shown. The crew (planner + coder + vision, verified and repaired) is what beats it. Same board, same rules.</li>',
     '<li><strong>Market/ceiling</strong> = similar-size rivals and frontier models, published.</li>',
     '<li>Small samples (n=3–5) prove the pipeline, not citable scores. Full-board runs come with a faster model host.</li>',

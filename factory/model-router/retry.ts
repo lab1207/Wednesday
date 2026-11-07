@@ -8,7 +8,7 @@
  * sleeps and clocks inject so tests never wait on real timers.
  */
 
-const RETRYABLE = new Set([429, 502, 503, 504])
+const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529])
 
 export const DEFAULT_MAX_ATTEMPTS = 3
 export const DEFAULT_BASE_DELAY_MS = 1000
@@ -99,14 +99,18 @@ export interface RetryOptions {
 }
 
 /**
- * Fetch with retry on 429/502/503/504 and on fetch rejections (flaky
- * tunnels). Returns the first OK / non-retryable / final response;
- * rethrows the last network error only when every attempt fails.
+ * Fetch with retry on 429/502/503/504 (and 408/500/529) and on fetch
+ * rejections (flaky tunnels). Returns the first OK / non-retryable / final
+ * response; rethrows the last network error only when every attempt fails.
+ *
+ * The init type is generic so the local route can pass undici's `dispatcher`
+ * option (which disables the 300s body timeout for slow CPU hardware)
+ * without the shared helper having to know about it.
  */
-export async function fetchWithRetry(
-  fetchFn: typeof fetch,
+export async function fetchWithRetry<TInit extends object>(
+  fetchFn: (url: string, init: TInit) => Promise<Response>,
   url: string,
-  init: Parameters<typeof fetch>[1],
+  init: TInit,
   options: RetryOptions = {},
 ): Promise<Response> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS

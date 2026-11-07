@@ -19,6 +19,10 @@ import type { EngineeringTask } from './contracts'
 const TASK_COUNT = 12
 const MAX_PARALLEL = 4
 
+// The service is held here so the exit path can dispose it (see the bottom
+// of this file).
+let activeService: { dispose(): Promise<void> } | undefined
+
 async function main(): Promise<void> {
   const tempRoot = await mkdtemp(
     join(tmpdir(), 'stress-test-'),
@@ -40,6 +44,7 @@ async function main(): Promise<void> {
 
   const service =
     await createFactoryService()
+  activeService = service
 
   try {
     const tasks: EngineeringTask[] =
@@ -141,10 +146,18 @@ void main()
       process.exitCode = 1
     },
   )
-  .finally(() => {
-    // Same boundary rule as hermes.ts: the undisposed cordis Context
-    // inside createFactoryService() keeps the event loop alive.
-    process.exit(
-      process.exitCode ?? 0,
-    )
+  .finally(async () => {
+    // THE SERVICE MUST BE DISPOSED (2026-11-07).
+    //
+    // The service's skill filesystem watches every skill root it discovers
+    // (about twenty-three open handles). A forced `process.exit()` tears
+    // those handles down mid-close, and libuv asserts on it: the process
+    // died with 0xC0000409 instead of exiting 0, and whether it happened
+    // depended on the machine's mood. Disposing closes the watchers
+    // properly, and the process ends on its own.
+    try {
+      await activeService?.dispose()
+    } catch {
+      // Best effort: the proof has already been printed.
+    }
   })

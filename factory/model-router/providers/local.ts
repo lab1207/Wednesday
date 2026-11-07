@@ -1,6 +1,5 @@
-import type { CompletionHooks, ModelProvider, ModelRequirements } from '../types'
-import { recordUsage } from '../usage'
-import { userContent } from './chat'
+import type { CompletionHooks, CompletionOptions, ModelProvider, ModelRequirements } from '../types'
+import { recordSeatUsage, recordUsage } from '../usage'
 import { describeBody } from './failure'
 import {
   crewBaseURLForModel,
@@ -11,6 +10,9 @@ import {
 import { bestFitFor } from '../model-capabilities'
 import { clampPrompt, resolvePromptBudget } from '../prompt-budget'
 import { recordTrimmedPrompt } from '../trim-report'
+import { buildChatBody } from './request-body'
+import { listLocalModels, cachedServerContextWindow } from '../local-servers'
+import { fetchWithRetry, resolveRetryConfig } from '../retry'
 import { Agent, fetch as localFetch } from 'undici'
 import { connect } from 'node:net'
 
@@ -104,12 +106,43 @@ export class LocalProvider implements ModelProvider {
     return true
   }
 
+  /**
+   * What the operator's own machine can serve (2026-11-05).
+   *
+   * This used to return ONE configured id and never ask the server. The
+   * consequence was blunt: `wednesday` could not see the models running on
+   * the operator's own box, so "staff a team from what I have locally" was
+   * impossible - the operator had to know and type every id. Now the route
+   * asks the server what it has (`GET /models`, with Ollama's `/api/tags`
+   * fallback) and falls back to the configured id when the server cannot be
+   * reached - never to an empty list, because an empty list reads as "this
+   * server has no models" when the truth is "I could not ask".
+   */
   async listModels(): Promise<string[]> {
     // Trim: copy-paste from terminals/shells routinely trails whitespace
     // (a trailing space once 404'd every benchmark run - the model id
     // must match exactly).
     const configured =
       process.env.LOCAL_LLM_MODEL?.trim()
+
+    const baseURL = crewBaseURLForModel(configured ?? '') ||
+      process.env.LOCAL_LLM_BASE_URL?.trim() ||
+      DEFAULT_BASE_URL
+
+    try {
+      const served = await listLocalModels(baseURL, 3000)
+      const ids = served.map(id => id.trim()).filter(id => id.length > 0)
+      if (ids.length > 0) {
+        // The configured model stays first: it is the operator's explicit
+        // choice and must win the default pick.
+        if (configured && ids.includes(configured)) {
+          return [configured, ...ids.filter(id => id !== configured)]
+        }
+        return configured ? [configured, ...ids] : ids
+      }
+    } catch {
+      // The server could not be asked. Fall through to the configured id.
+    }
 
     return [
       configured && configured.length > 0
@@ -158,13 +191,25 @@ export class LocalProvider implements ModelProvider {
     prompt: string,
     images?: string[],
     hooks?: CompletionHooks,
+    options?: CompletionOptions,
   ): Promise<string> {
     const cleanModel = model.trim()
 
-    // Fit the window BEFORE the request. A local/tunnel model with a 13K
-    // context silently head-truncates a 25K prompt, so the operator's build
-    // ignores half its own instructions and reads as a bad model (B150).
-    const budget = clampPrompt(prompt, resolvePromptBudget())
+    // Which server answers this model, and what window is IT running with?
+    // The deployment's window can be smaller than the model's own (a 13K
+    // Colab box serving a 32K model), and the smaller one is the real one.
+    const baseURL = crewBaseURLForModel(cleanModel)
+    const serverWindow = await cachedServerContextWindow(baseURL)
+
+    // Fit the window BEFORE the request, against THIS model's real window
+    // (2026-11-05): the route used to assume every local model had one
+    // hardcoded 13,312-token window, so a 32K model was cut at 13K and a
+    // 8K model was allowed 13K (the server then truncated the head of the
+    // prompt, and the operator read that as a bad model - B150).
+    const budget = clampPrompt(
+      prompt,
+      resolvePromptBudget(process.env, cleanModel, serverWindow),
+    )
     if (budget.trimmed > 0) {
       prompt = budget.prompt
       recordTrimmedPrompt(cleanModel, budget.before, budget.after)
@@ -174,11 +219,25 @@ export class LocalProvider implements ModelProvider {
       process.env.LOCAL_LLM_API_KEY?.trim() ||
       'local'
 
-    const response = await localFetch(
+    const startedAt = Date.now()
+
+    // The stream flags belong to the BODY, not to the request envelope.
+    const requestBody = buildChatBody({
+      model: cleanModel,
+      prompt,
+      images,
+      options,
+      provider: this.name,
+    })
+    requestBody.stream = true
+    requestBody.stream_options = { include_usage: true }
+
+    const response = await fetchWithRetry(
+      localFetch as unknown as (url: string, init: object) => Promise<Response>,
       // Per-model tunnel (2026-09-23): the model id picks its Colab
       // box (planner/coder on A, vision on B by default) instead of
       // every call sharing one base URL.
-      `${crewBaseURLForModel(cleanModel)}/chat/completions`,
+      `${baseURL}/chat/completions`,
       {
         method: 'POST',
         headers: {
@@ -186,20 +245,13 @@ export class LocalProvider implements ModelProvider {
           authorization: `Bearer ${apiKey}`,
           'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         },
-        body: JSON.stringify({
-          model: cleanModel,
-          messages: [
-            {
-              role: 'user',
-              content: userContent(prompt, images),
-            },
-          ],
-          stream: true,
-          stream_options: { include_usage: true },
-        }),
+        body: JSON.stringify(requestBody),
         dispatcher: NO_TIMEOUT_LOCAL,
-      },
+      } as object,
+      resolveRetryConfig(),
     )
+
+    const elapsedMs = Date.now() - startedAt
 
     if (!response.ok) {
       const rawBody = await response.text()
@@ -270,18 +322,39 @@ export class LocalProvider implements ModelProvider {
     }
 
     const providerName = this.name
+    const seat = options?.seat ?? ''
     const finishCompletion = (): string => {
       if (sawUsage) {
-        recordUsage(providerName, cleanModel, promptTokens, completionTokens)
+        recordUsage(providerName, cleanModel, promptTokens, completionTokens, elapsedMs)
       }
+      recordSeatUsage(
+        seat,
+        providerName,
+        cleanModel,
+        promptTokens,
+        completionTokens,
+        elapsedMs,
+      )
 
       // Thinking-strip (2026-09-23): R1 leaks `<think>` reasoning into
       // answers on the Colab trio route — strip before returning so only
       // the final answer flows downstream. Clean text passes untouched.
-      const text = stripThinking(content.trim() || reasoning.trim())
+      //
+      // The reasoning is NOT an answer fallback (2026-11-05). A model that
+      // produced only a scratchpad has not answered, and handing the
+      // scratchpad on as the answer is how a reviewer's JSON verdict became
+      // a paragraph of thinking — which then failed to parse and SILENTLY
+      // muted the reviewer. Failing loudly lets the repair loop retry.
+      const text = stripThinking(content.trim())
 
       if (text) {
         return text
+      }
+
+      if (reasoning.trim()) {
+        throw new Error(
+          'Local model produced only reasoning and no answer',
+        )
       }
 
       throw new Error('Local model returned no usable assistant content')

@@ -1,10 +1,12 @@
 import type {
   CompletionHooks,
+  CompletionOptions,
   ModelProvider,
   ModelRequirements,
 } from '../types'
 
 import {
+  recordSeatUsage,
   recordUsage,
 } from '../usage'
 
@@ -15,7 +17,9 @@ import {
   throttleShared,
 } from '../retry'
 
-import { userContent } from './chat'
+import { buildChatBody } from './request-body'
+import { consumeChatStream } from './sse'
+import { stripThinking } from '../crew-routing'
 
 import { describeBody } from './failure'
 
@@ -25,25 +29,6 @@ import {
   pickFreeModel,
   preferredFreeModels,
 } from '../free-pool'
-
-interface OpenRouterChoice {
-  message?: {
-    content?: unknown
-    reasoning?: unknown
-    reasoning_content?: unknown
-  }
-  text?: unknown
-}
-
-interface OpenRouterResponse {
-  choices?: OpenRouterChoice[]
-  output_text?: unknown
-  output?: unknown
-  usage?: {
-    prompt_tokens?: number
-    completion_tokens?: number
-  }
-}
 
 export class OpenRouterProvider implements ModelProvider {
   readonly name = 'openrouter'
@@ -97,6 +82,7 @@ export class OpenRouterProvider implements ModelProvider {
     prompt: string,
     images?: string[],
     hooks?: CompletionHooks,
+    options?: CompletionOptions,
   ): Promise<string> {
     const apiKey =
       process.env.OPENROUTER_API_KEY
@@ -113,6 +99,21 @@ export class OpenRouterProvider implements ModelProvider {
     await throttleShared(resolveThrottleMs())
 
     const retry = resolveRetryConfig()
+    const startedAt = Date.now()
+
+    // The route STREAMS now (2026-11-05). It used to read the whole body
+    // with `await response.text()`, so the operator watched a silent spinner
+    // for a minute on a small model and, when the socket dropped, lost every
+    // token of the answer. The shared reader handles both shapes: SSE and a
+    // server that answers plain JSON anyway.
+    const requestBody = buildChatBody({
+      model,
+      prompt,
+      images,
+      options,
+      provider: this.name,
+    })
+    requestBody.stream = true
 
     const response = await fetchWithRetry(
       fetch,
@@ -123,123 +124,68 @@ export class OpenRouterProvider implements ModelProvider {
           'content-type': 'application/json',
           authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'user',
-              content: userContent(prompt, images),
-            },
-          ],
-        }),
+        body: JSON.stringify(requestBody),
       },
       retry,
     )
 
-    const rawBody = await response.text()
+    const elapsedMs = Date.now() - startedAt
 
     if (!response.ok) {
+      const rawBody = await response.text()
       throw new Error(
         `OpenRouter request failed: ${response.status} — ${describeBody(rawBody)}`,
       )
     }
 
-    let data: OpenRouterResponse
+    const streamed = await consumeChatStream(response, hooks)
 
-    try {
-      data = JSON.parse(
-        rawBody,
-      ) as OpenRouterResponse
-    } catch {
-      throw new Error(
-        `OpenRouter returned invalid JSON: ${describeBody(rawBody)}`,
-      )
-    }
-
-    if (data.usage !== undefined) {
+    if (streamed.promptTokens > 0 || streamed.completionTokens > 0) {
       recordUsage(
         this.name,
         model,
-        data.usage.prompt_tokens ?? 0,
-        data.usage.completion_tokens ?? 0,
+        streamed.promptTokens,
+        streamed.completionTokens,
+        elapsedMs,
+      )
+    }
+    recordSeatUsage(
+      options?.seat ?? '',
+      this.name,
+      model,
+      streamed.promptTokens,
+      streamed.completionTokens,
+      elapsedMs,
+    )
+
+    // The answer is the CONTENT. Reasoning is shown live (the operator asked
+    // to see it) but is never handed on AS the answer: a scratchpad that
+    // reaches the next stage breaks its JSON and silently mutes the seat.
+    const text = stripThinking(streamed.content.trim())
+
+    if (text) {
+      return text
+    }
+
+    // OpenRouter's Responses-style models answer with `output_text` /
+    // `output` at the top level instead of `choices`.
+    const raw = streamed.raw as {
+      output_text?: unknown
+      output?: unknown
+    } | undefined
+    const outputText = typeof raw?.output_text === 'string' ? raw.output_text.trim() : ''
+    if (outputText) return outputText
+    const output = typeof raw?.output === 'string' ? raw.output.trim() : ''
+    if (output) return output
+
+    if (streamed.reasoning.trim()) {
+      throw new Error(
+        'OpenRouter produced only reasoning and no answer',
       )
     }
 
-    const choice =
-      data.choices?.[0]
-
-    const content =
-      choice?.message?.content
-
-    if (typeof content === 'string' &&
-        content.trim()) {
-      return content
-    }
-
-    if (Array.isArray(content)) {
-      const text = content
-        .map(part => {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            'text' in part
-          ) {
-            return String(
-              (part as { text?: unknown }).text ??
-              '',
-            )
-          }
-
-          return ''
-        })
-        .join('')
-        .trim()
-
-      if (text) {
-        return text
-      }
-    }
-
-    const reasoning =
-      choice?.message?.reasoning
-
-    if (
-      typeof reasoning === 'string' &&
-      reasoning.trim()
-    ) {
-      // This route does not stream, so the reasoning arrives whole — but it is
-      // still the model's own reasoning, and the operator asked to see it.
-      hooks?.onReasoning?.(reasoning)
-      return reasoning
-    }
-
-    const reasoningContent =
-      choice?.message?.reasoning_content
-
-    if (
-      typeof reasoningContent === 'string' &&
-      reasoningContent.trim()
-    ) {
-      hooks?.onReasoning?.(reasoningContent)
-      return reasoningContent
-    }
-
-    if (
-      typeof data.output_text === 'string' &&
-      data.output_text.trim()
-    ) {
-      return data.output_text
-    }
-
-    if (
-      typeof data.output === 'string' &&
-      data.output.trim()
-    ) {
-      return data.output
-    }
-
     throw new Error(
-      `OpenRouter returned no usable assistant content: ${rawBody}`,
+      'OpenRouter returned no usable assistant content',
     )
   }
 }

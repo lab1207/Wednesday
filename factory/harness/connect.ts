@@ -432,7 +432,7 @@ export async function connectFlow(ui: ConnectUi, options: ConnectOptions = {}): 
       options.candidates ?? undefined,
     )
     if (servers.length === 0) {
-      ui.error('no local model server answered (tried Ollama :11434, LM Studio :1234, llama.cpp :8080, :1337, wednesday proxy :18090).')
+      ui.error('no local model server answered (tried Ollama :11434, LM Studio :1234, llama.cpp :8080, vLLM :8000, :1337, wednesday proxy :18090).')
       const installed = ollamaInstalledModels()
       if (installed.length > 0) {
         ui.note(`ollama has ${installed.length} model(s) installed — start the server with: ollama serve`)

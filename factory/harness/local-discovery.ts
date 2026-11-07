@@ -35,6 +35,12 @@ const CANDIDATES: Candidate[] = [
   { baseURL: 'http://127.0.0.1:11434/v1', label: 'Ollama · 127.0.0.1:11434', extraPaths: ['/api/tags'] },
   { baseURL: 'http://127.0.0.1:1234/v1', label: 'LM Studio · 127.0.0.1:1234' },
   { baseURL: 'http://127.0.0.1:8080/v1', label: 'llama.cpp server · 127.0.0.1:8080' },
+  // vLLM (2026-11-05): the model layer has always known about vLLM on
+  // :8000 (`factory/model-router/local-servers.ts`), and the README and the
+  // website both CLAIMED the harness auto-detected it - it did not. The
+  // claim was false and the port was one line away, so the claim is now
+  // true: the harness scan probes :8000 too.
+  { baseURL: 'http://127.0.0.1:8000/v1', label: 'vLLM · 127.0.0.1:8000' },
   { baseURL: 'http://127.0.0.1:1337/v1', label: 'local server · 127.0.0.1:1337' },
   { baseURL: 'http://127.0.0.1:18090/v1', label: 'wednesday local proxy · 127.0.0.1:18090' },
 ]

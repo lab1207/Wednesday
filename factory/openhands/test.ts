@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,7 +8,36 @@ import { analyzeRepository } from './connector'
 
 // Must be set before createFactoryService() selects the provider.
 process.env.FACTORY_EXECUTION_MODE = 'deterministic'
+
+/**
+ * THE TEST MUST NOT WRITE INTO THE OPERATOR'S REAL STATE (2026-11-07).
+ *
+ * This suite ran a real Factory run against the default state home, so
+ * its events landed in the operator's own
+ * `~/.wednesday/state/events.jsonl` - 396 fake events from this suite
+ * alone. The state home is set BEFORE the service module is imported:
+ * `paths.ts` resolves the paths at import time.
+ */
+const stateHome =
+  mkdtempSync(
+    join(
+      tmpdir(),
+      'openhands-test-',
+    ),
+  )
+
+process.env.WEDNESDAY_STATE_HOME =
+  stateHome
+process.env.FACTORY_EVENTS_PATH =
+  join(stateHome, 'events.jsonl')
+process.env.HERMES_TASKS_PATH =
+  join(stateHome, 'tasks.json')
+
 const { createFactoryService } = await import('../service')
+
+// The service is held here so the exit path can dispose it (see the bottom
+// of this file).
+let activeService: { dispose(): Promise<void> } | undefined
 
 /**
  * V1.4 OpenHands connector test — repository understanding.
@@ -71,6 +101,7 @@ async function main(): Promise<void> {
 
     // -- end-to-end: profile feeds a real Factory run -------------------
     const service = await createFactoryService()
+    activeService = service
     const result = await service.run({
       id: 'openhands-e2e-001',
       workspace: directory,
@@ -93,8 +124,24 @@ async function main(): Promise<void> {
 void main().catch(error => {
   console.error(error)
   process.exitCode = 1
-}).finally(() => {
-  // The undisposed cordis Context inside createFactoryService() keeps the
-  // event loop alive; exit explicitly at the test boundary (same as Hermes CLI).
-  process.exit(process.exitCode ?? 0)
+}).finally(async () => {
+  // THE SERVICE MUST BE DISPOSED (2026-11-07).
+  //
+  // The service's skill filesystem watches every skill root it discovers
+  // (about twenty-three open handles). A forced `process.exit()` tears
+  // those handles down mid-close, and libuv asserts on it: the process
+  // died with 0xC0000409 instead of exiting 0. Disposing closes the
+  // watchers properly, and the process ends on its own.
+  try {
+    await activeService?.dispose()
+  } catch {
+    // Best effort: the proof has already been printed.
+  }
+  rmSync(
+    stateHome,
+    {
+      recursive: true,
+      force: true,
+    },
+  )
 })

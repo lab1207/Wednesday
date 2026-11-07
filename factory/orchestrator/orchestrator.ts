@@ -410,6 +410,30 @@ const RELAY_DIFF_SKIP_DIRS = new Set(['node_modules', '.git'])
 
 const RELAY_DIFF_MAX_FILES = 2000
 
+/**
+ * A seat's own numeric score, when it reported one (pure).
+ *
+ * Ballots are graded by verdict, not by a number, so this is usually null —
+ * but a seat that DID hand back a number should not have it thrown away on
+ * the way to the operator's dock.
+ */
+function laneScoreOf(output: AgentOutput | null): number | null {
+  if (!output) return null
+  const candidates: unknown[] = [
+    (output as unknown as Record<string, unknown>).score,
+    (output.review as unknown as Record<string, unknown> | undefined)?.score,
+  ]
+  for (const candidate of candidates) {
+    if (
+      typeof candidate === 'number' &&
+      Number.isFinite(candidate)
+    ) {
+      return candidate
+    }
+  }
+  return null
+}
+
 function walkLaneFiles(dir: string, base: string, out: string[]): boolean {
   let entries
   try {
@@ -603,6 +627,41 @@ export class FactoryOrchestrator {
        * Event persistence must never
        * break engineering execution.
        */
+    }
+  }
+
+  /**
+   * Lane visibility (team runs): a lane is one seat of a parallel race.
+   *
+   * Every lane spoke the same role, so the operator's dock could only ever
+   * show ONE coder — the last lane to report — and a two-model duel looked
+   * like a single seat. These events name the lane, the model that ran it
+   * and how it scored, so the crew is visible while it works.
+   *
+   * Publishing is never a run failure: the sink may be missing, slow or
+   * broken, and a lost receipt must not fail the engineering work.
+   */
+  private async emitLane(
+    type:
+      | 'lane.started'
+      | 'lane.completed'
+      | 'lane.scored',
+    taskId:
+      string,
+    payload:
+      Record<string, unknown>,
+    role?:
+      string,
+  ): Promise<void> {
+    try {
+      await this.emit(
+        type,
+        taskId,
+        payload,
+        role,
+      )
+    } catch {
+      // Lane visibility is never a run failure.
     }
   }
 
@@ -1686,7 +1745,25 @@ export class FactoryOrchestrator {
         const grades = await Promise.all(
           lanes.map(async (lane, index) => {
             const sink = freshSink()
+            // Lane identity: two coder lanes are two rows in the operator's
+            // dock, and `duel-0` is the name that tells them apart.
+            const laneLabel = `duel-${index}`
+            const pin = lineup[index]
+            const model = pin ?? ''
             if (!lane.ready || isAborted() || budgetExceededReason() !== null) {
+              // The lane never ran. Say so: a dead lane must not look like a
+              // lane that is merely quiet.
+              await this.emitLane(
+                'lane.completed',
+                task.id,
+                {
+                  lane: laneLabel,
+                  model,
+                  role: 'coder',
+                  ok: false,
+                },
+                'coder',
+              )
               return {
                 index,
                 dir: lane.dir,
@@ -1699,7 +1776,17 @@ export class FactoryOrchestrator {
                   : 'Lane setup failed: workspace copy failed.',
               }
             }
-            const pin = lineup[index]
+            await this.emitLane(
+              'lane.started',
+              task.id,
+              {
+                lane: laneLabel,
+                model,
+                role: 'coder',
+                round: repairRound,
+              },
+              'coder',
+            )
             const laneTask: EngineeringTask = {
               ...task,
               workspace: lane.dir,
@@ -1725,16 +1812,50 @@ export class FactoryOrchestrator {
                     { allowBlockingOutput: true },
                     { task: laneTask, prevOutputs, knowledge: testerKnowledge, sink },
                   )
+            const laneIssues =
+              coder === null || tester === null
+                ? Number.MAX_SAFE_INTEGER
+                : (tester.blockingIssues ?? []).length
+            await this.emitLane(
+              'lane.completed',
+              task.id,
+              {
+                lane: laneLabel,
+                model,
+                role: 'coder',
+                ok: coder !== null && tester !== null,
+              },
+              'coder',
+            )
+            // The grade: how many blocking issues the tester found in this
+            // lane. A lane that produced no grade has NO score — null, never
+            // a fake zero that would look like a clean lane.
+            await this.emitLane(
+              'lane.scored',
+              task.id,
+              {
+                lane: laneLabel,
+                model,
+                score:
+                  laneIssues ===
+                  Number.MAX_SAFE_INTEGER
+                    ? null
+                    : laneIssues,
+                detail:
+                  laneIssues ===
+                  Number.MAX_SAFE_INTEGER
+                    ? 'lane produced no grade'
+                    : `${laneIssues} blocking issue${laneIssues === 1 ? '' : 's'}`,
+              },
+              'coder',
+            )
             return {
               index,
               dir: lane.dir,
               sink,
               coder,
               tester,
-              issues:
-                coder === null || tester === null
-                  ? Number.MAX_SAFE_INTEGER
-                  : (tester.blockingIssues ?? []).length,
+              issues: laneIssues,
               note: null as string | null,
             }
           }),
@@ -1776,6 +1897,7 @@ export class FactoryOrchestrator {
 
     const runReviewVote = async (
       width: number,
+      repairRound: number,
     ): Promise<
       | { aborted: true }
       | { verdict: 'fail'; findings: string[] }
@@ -1795,6 +1917,11 @@ export class FactoryOrchestrator {
         Array.from({ length: width }, async (_, ballotIndex) => {
           const sink = freshSink()
           const ballotPin = voteLineup[ballotIndex]
+          // A ballot is a lane too: `vote-0`, `vote-1`, ... each with the
+          // model that cast it. The operator sees three ballots, not one
+          // "reviewer" that keeps changing its mind.
+          const laneLabel = `vote-${ballotIndex}`
+          const model = ballotPin ?? ''
           const ballotTask: EngineeringTask = ballotPin
             ? {
                 ...task,
@@ -1804,10 +1931,48 @@ export class FactoryOrchestrator {
                 },
               }
             : task
+          await this.emitLane(
+            'lane.started',
+            task.id,
+            {
+              lane: laneLabel,
+              model,
+              role: 'reviewer',
+              round: repairRound,
+            },
+            'reviewer',
+          )
           const out = await runRole(
             'reviewer',
             { allowBlockingOutput: true },
             { task: ballotTask, prevOutputs, knowledge, sink },
+          )
+          // A missing or unusable verdict counts as a fail ballot, exactly
+          // as the tally counts it.
+          const verdict = out?.review?.verdict ?? 'fail'
+          await this.emitLane(
+            'lane.completed',
+            task.id,
+            {
+              lane: laneLabel,
+              model,
+              role: 'reviewer',
+              ok: verdict === 'pass',
+            },
+            'reviewer',
+          )
+          // Ballots are graded by verdict, not by a number; a seat that DID
+          // report a numeric score keeps it.
+          await this.emitLane(
+            'lane.scored',
+            task.id,
+            {
+              lane: laneLabel,
+              model,
+              score: laneScoreOf(out),
+              detail: `verdict ${verdict}`,
+            },
+            'reviewer',
           )
           return { out, steps: sink.steps }
         }),
@@ -1942,7 +2107,24 @@ export class FactoryOrchestrator {
           leaves.map(async (leaf, index) => {
             const sink = freshSink()
             const lane = lanes[index]!
+            // The handoff: this piece goes to this seat, in this lane. The
+            // lane label is what tells two relay pieces apart in the dock.
+            const laneLabel = `relay-${index}`
+            const model = leaf.assignee ?? ''
             if (!lane.ready || isAborted() || budgetExceededReason() !== null) {
+              // The piece never ran. Say so: a dead lane must not look like a
+              // lane that is merely quiet.
+              await this.emitLane(
+                'lane.completed',
+                task.id,
+                {
+                  lane: laneLabel,
+                  model,
+                  role: 'coder',
+                  ok: false,
+                },
+                'coder',
+              )
               return {
                 leaf,
                 index,
@@ -1956,6 +2138,17 @@ export class FactoryOrchestrator {
                 ],
               }
             }
+            await this.emitLane(
+              'lane.started',
+              task.id,
+              {
+                lane: laneLabel,
+                model,
+                role: 'coder',
+                round: repairRound,
+              },
+              'coder',
+            )
             const laneTask: EngineeringTask = {
               ...task,
               workspace: lane.dir,
@@ -1992,6 +2185,17 @@ export class FactoryOrchestrator {
               coder === null || tester === null
                 ? ['Coder produced no output.']
                 : (tester.blockingIssues ?? [])
+            await this.emitLane(
+              'lane.completed',
+              task.id,
+              {
+                lane: laneLabel,
+                model,
+                role: 'coder',
+                ok: coder !== null && tester !== null,
+              },
+              'coder',
+            )
             return {
               leaf,
               index,
@@ -2569,7 +2773,7 @@ export class FactoryOrchestrator {
       // fail into the shared repair path. Solo keeps the single call.
       const ballot =
         expansion.mode === 'vote' && expansion.voteWidth > 1
-          ? await runReviewVote(expansion.voteWidth)
+          ? await runReviewVote(expansion.voteWidth, repair)
           : null
 
       if (ballot !== null && 'aborted' in ballot) {

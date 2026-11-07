@@ -10,30 +10,65 @@ import type { EngineeringTask, EngineeringResult } from '../contracts'
 import { installFatalGuard, installInterrupt } from './interrupt'
 import { analyzeRepositoryCached } from '../openhands/connector'
 import { loadStore, runHermesTask, submitTask } from '../hermes/store'
-import { loadCrews, activeCrew, applyCrew, crewMeterName, crewSeatSummary, setActiveCrew, updateCrew, type Crew } from './crew-store'
-import { usageDiff, usageSnapshot } from '../model-router/usage'
+import { loadCrews, activeCrew, applyCrew, crewMeterName, crewSeatModel, crewSeatSummary, setActiveCrew, updateCrew, type Crew } from './crew-store'
+import {
+  estimateSeatCostUsd,
+  formatDurationMs,
+  formatTokenCount,
+  seatUsageByCost,
+  seatUsageSnapshot,
+  usageDiff,
+  usageSnapshot,
+} from '../model-router/usage'
 import { PersistentFactoryEventBus } from '../events'
 import type { AgentActivityKind } from '../events'
 import { createRequire } from 'node:module'
 import { EVENTS_PATH, STATE_HOME } from '../paths'
 import { migrateLegacyState } from '../state-migration'
 import { configBlockerIn, liveConfigBlocker, loadConfig, PROVIDER_PREFIXES, requireLiveConfig, safeError, validateModel, type ConfigBlocker } from './config'
-import { resolveCrewModel, seatModelPin, splitProviderPin, crewSlotFor, type CrewRole } from '../model-router/crew-routing'
+import {
+  CREW_ROLES,
+  crewRoleEnvName,
+  normalizeCrewRole,
+  resolveCrewModel,
+  seatModelPin,
+  splitProviderPin,
+  crewSlotFor,
+  type CrewRole,
+} from '../model-router/crew-routing'
 import { type ChatMessage, type ChatRoute, buildChatRequest, chatComplete, resolveChatRoute, seatFitsRoute } from '../model-router/chat-stream'
 import { classifyIntent } from './intent'
 import { inferModelCard } from '../model-router/model-cards'
-import { channelOf, checkForUpdates, resolveUpdate } from './update-check'
+import {
+  checkForUpdates,
+  checkUpdate,
+  detectLocalInstall,
+  updateStatusLines,
+} from './update-check'
 import { shouldAutoRestart } from './updater'
 import { redactSensitiveText } from '../security/redaction'
 import { detectDefaults, hasProjectMarker, NONEMPTY_WORKSPACE_CHECK, packageHasTestScript, type AutoDefaults } from './defaults'
 import {
   isFreshWorkspace,
   isPageRequest,
-  PAGE_ENTRY,
   pageAcceptanceCriteria,
   pageBuildBrief,
   pageCheckCommand,
+  pageEntryFile,
+  pageIsMultiFile,
 } from './page-brief'
+
+import {
+  aboutAnswer,
+  isAboutQuestion,
+} from './about'
+import {
+  attentionDecision,
+  bellBytes,
+  bellEnabled,
+  type AttentionKind,
+} from './attention'
+import { formatThroughputNote, throughput } from './throughput'
 import { readHealthHistory, recordHealthReport, runHealthChecks } from '../health'
 import { banner, formatEvent, isTty, previewTitle, rule, stageHeader, statusLine, taskCard } from './tui'
 import { BUSY_HINTS, COMPOSER_HINTS, Screen, activityMessage, bannerColumns, busyStatus, chatLiveRow, crewUpdate, eventMessage, foldTool, glyph, initialState, liveTail, runAdvisories, runSelect, selectMatching, selectSection, traceNote, wednesdayCompact, type EventDetail, type SelectOption, type StartupAdvisories, type ToolFold } from './screen'
@@ -43,6 +78,8 @@ import { expandPendingPastePlaceholders, framePasteExpansion } from './paste-fra
 import type { CommandSpec } from './completion'
 import { PATCH_BUDGET, PATCH_BUDGETS, patchRows } from './patch-rows'
 import { compactHistory } from './compact'
+import { chatSeatModel, parseChatAddress, pickChatSeat } from './chat-addressing'
+import { templateFlagLines, templateFlags, templateSummary } from './templates-command'
 import { resolvePromptBudget } from '../model-router/prompt-budget'
 import { DISPLAY_HINTS, isDisplayMode, loadDisplay, saveDisplay, type DisplayMode } from './display-store'
 import { eventTrailLines, shortId, statusTone, streamLine, taskDetailLines, taskListLines, wrapText, type TaskRow, type ViewLine } from './views'
@@ -62,10 +99,12 @@ export const HELP_COMMANDS: Array<[string, string]> = [
   ['/create [name]', 'create a team in one pick (3 seats · one model)'],
   ['/agents', 'crew profile · seat per role'],
   ['/crew', 'list · select · edit · delete teams'],
+  ['/team', 'how the team works: shape · repairs · budget · test'],
+  ['/templates', 'save · list · run a request again'],
   ['/model', 'every model from every connection — assign it a role'],
   ['/status', 'route · model · pool · shape'],
   ['/doctor', 'readiness check (read-only)'],
-  ['/stats', 'token usage for this session'],
+  ['/stats', 'tokens · wall clock · cost, per seat'],
   ['/display', 'transcript density: quiet · normal · verbose'],
   ['/debug', 'live route · seats · paths'],
   ['/update', 'check npm; with your yes, install the pinned newer release'],
@@ -80,7 +119,7 @@ export const HELP_COMMANDS: Array<[string, string]> = [
   ['/events <id>', 'inspect persisted Factory events'],
   ['/run <id>', 'preview + approve a queued run'],
   ['/health', 'factory health meter + history'],
-  ['/review', 'review the workspace diff'],
+  ['/review', 'review the diff · accept or reject it'],
   ['/help', 'this page'],
   ['/exit', 'leave the harness'],
 ]
@@ -148,7 +187,7 @@ export const COMMAND_SPECS: CommandSpec[] = HELP_COMMANDS
 export const HELP_GROUPS: HelpGroup[] = [
   { title: 'Composer', names: ['<request>', '/'] },
   { title: 'Session', names: ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q'] },
-  { title: 'Setup', names: ['/connect', '/create [name]', '/model', '/agents', '/crew', '/onboard', '/proof'] },
+  { title: 'Setup', names: ['/connect', '/create [name]', '/model', '/agents', '/crew', '/team', '/templates', '/onboard', '/proof'] },
   { title: 'Work', names: ['/tasks', '/result <id>', '/events <id>', '/run <id>', '/review', '/health'] },
   { title: 'System', names: ['/update'] },
   { title: 'Help', names: ['/help', '/exit'] },
@@ -334,7 +373,10 @@ export async function makeTask(
     workspace,
     objective: request,
     role: page ? 'frontend' : (auto?.role ?? 'backend'),
-    stack: page ? 'html, css' : (profile.languages.join(', ') || auto?.stack || 'unknown'),
+    // A page request must not DISCARD the workspace's real stack: forcing
+    // "html, css" over a React repo also made the rule lookup miss, which is
+    // part of why every page came out the same shape.
+    stack: profile.languages.join(', ') || (page ? 'html, css' : (auto?.stack || 'unknown')),
     constraints: [
       // "Minimal" is correct for an edit and wrong for a build from scratch:
       // it is exactly the instruction a small model follows into a placeholder.
@@ -345,10 +387,15 @@ export async function makeTask(
       ...profile.toConstraints(),
     ],
     acceptanceCriteria: page
-      ? pageAcceptanceCriteria()
+      ? pageAcceptanceCriteria(request)
       : ['Complete the requested objective and pass the supplied verification.'],
-    acceptance: { requiredFiles: pageGate ? [PAGE_ENTRY, ...requiredFiles] : requiredFiles },
-    verification: { setupCommands: [], testCommands: pageGate ? [pageCheckCommand(), ...tests] : tests },
+    acceptance: { requiredFiles: pageGate ? [pageEntryFile(request), ...requiredFiles] : requiredFiles },
+    verification: {
+      setupCommands: [],
+      testCommands: pageGate
+        ? [pageCheckCommand(pageEntryFile(request), { allowExtraHtml: pageIsMultiFile(request) }), ...tests]
+        : tests,
+    },
     modelRequirements: { capability: 'coding' },
   }
 }
@@ -372,9 +419,67 @@ async function approve(task: EngineeringTask, ask: Ask, classic = false): Promis
   return false
 }
 
+/**
+ * Ring the attention bell for an event.
+ *
+ * THE DECISION lives in attention.ts (pure, offline, testable); the BYTES
+ * travel through the surface that owns the output. That split matters on the
+ * screen path: the screen owns an ALTERNATE BUFFER, and a raw write to
+ * process.stdout can land in the middle of a painted frame. The screen
+ * therefore writes the bell through its own writer.
+ *
+ * WHY A BELL AT ALL (2026-11-07): OpenCode's engagement surface is built on
+ * telling the operator when it needs them -- `permission`, `question`,
+ * `error`, `done` and `subagent_done` all make a sound and raise a system
+ * notification. Wednesday was quiet instead: the spinner painted, the answer
+ * streamed, and then the app went silent, so a run that had finished was
+ * indistinguishable from a run that was still going.
+ */
+function announce(
+  kind: AttentionKind,
+  elapsedMs: number,
+  write?: (bytes: string) => void,
+): void {
+  const decision = attentionDecision(kind, elapsedMs, {
+    muted: !bellEnabled(),
+    interactive: Boolean(process.stdout.isTTY),
+  })
+  const bytes = bellBytes(decision)
+  if (!bytes) return
+  try {
+    if (write) write(bytes)
+    else process.stdout.write(bytes)
+  } catch {
+    // A courtesy must never be the thing that breaks a run. A closed stdout
+    // (the operator piped the session into `head`) must not turn a bell
+    // into an EPIPE crash.
+  }
+}
+
 interface RunSink {
+  /**
+   * The attention bell's bytes (2026-11-07).
+   *
+   * The sink owns the output channel, so it owns the bell too: the screen
+   * writes it to its own alternate-buffer writer, and a pipe has no sink at
+   * all (a BEL byte in captured output is garbage).
+   */
+  bell?(bytes: string): void
   /** `detail` is the last concrete thing in the event (a tool name, an attempt). */
-  event(type: string, role?: string, detail?: EventDetail): void
+  event(
+    type: string,
+    role?: string,
+    detail?: EventDetail,
+    /**
+     * The event's own payload (2026-11-05).
+     *
+     * The crew dock needs it for LANE events: `lane.started` carries which
+     * lane and which model, and without the payload a duel with three
+     * racing models looks like one coder working. The detail column alone
+     * cannot say that.
+     */
+    payload?: Record<string, unknown>,
+  ): void
   line(text: string, tone: MsgTone): void
   /** A framed answer block (screen path). Classic prints the lines plain. */
   panel?(title: string, lines: Array<{ text: string; tone: MsgTone }>): void
@@ -973,7 +1078,7 @@ async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: Ru
           // One detail object feeds BOTH surfaces from one derivation: the dock
           // takes the tool name, the transcript row takes the tool name plus its
           // outcome. Deriving it twice is how the two drift apart.
-          sink.event(event.type, event.role, eventDetail(event.type, event.payload))
+          sink.event(event.type, event.role, eventDetail(event.type, event.payload), event.payload)
         } else {
           if (event.type === 'agent.started' && event.role) {
             const header = stageHeader(event.role)
@@ -1013,6 +1118,37 @@ async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: Ru
     // not a task that failed, and rendering it as one is what sent the operator
     // back to the approval card three times.
     const blocker = statusOk === false ? configBlockerIn(result?.diagnostics) : null
+    // THE FACTORY REMEMBERS (2026-11-05).
+    //
+    // The knowledge layer was twenty adapters of STATIC doctrine, so the
+    // factory forgot everything between runs and re-derived the same test
+    // command every time. A finished run is a chance to learn ONE thing that
+    // stays true: the command that PASSED here. A failed run teaches
+    // nothing - the command that failed is not the command that works, and
+    // remembering it would poison the next run.
+    if (statusOk === true && workspace) {
+      try {
+        const { rememberRunOutcome } = await import('../knowledge/project-memory')
+        const passed = (result?.tests ?? []).filter(t => t.passed)
+        rememberRunOutcome(workspace, {
+          testCommand: passed[0]?.command,
+          summary: result?.summary,
+        })
+      } catch {
+        // A memory write must never break a run that already succeeded.
+      }
+    }
+    // The run's FOOTPRINT (2026-11-05). `/review accept` and `/review reject`
+    // act on exactly these files, so a rejection can never sweep away the
+    // operator's own untracked scratch files.
+    if (workspace && result?.filesChanged?.length) {
+      try {
+        const { recordLastRun } = await import('./last-run')
+        recordLastRun(workspace, result.filesChanged)
+      } catch {
+        // A bookkeeping failure must never break a run that already finished.
+      }
+    }
     const headline = statusOk === true
       ? `${glyph('floret')} task completed${fileBits}${testBits}`
       : statusOk === false
@@ -1074,6 +1210,11 @@ async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: Ru
       for (const line of resultLines) console.log(statusLine(line.text, line.tone === 'plain' ? null : line.tone === 'green'))
       if (isTty() && result) console.log(rule())
     }
+    // THE ATTENTION BELL (2026-11-07). The run is over and the operator may
+    // be somewhere else -- a bell is how they find out. A finished run rings
+    // once (and only if it was long enough to have been missed); a failure
+    // rings twice, because one bell is easy to lose.
+    announce(statusOk === false ? 'error' : 'done', Date.now() - startedAt, sink?.bell)
     if (outcome.status !== 'completed') process.exitCode = 1
   } finally {
     monitoring = false
@@ -1307,19 +1448,45 @@ function announceRoute(ui: ReplUi, id: string): void {
 }
 
 /**
- * The three crew slots, pipeline order (planner → coder → vision). One source
- * for both plates, the profile receipts and the seat prompts, so a seat can
- * never exist in one surface and be missing from another.
+ * The crew SEATS, pipeline order (2026-11-05).
+ *
+ * One source for both plates, the profile receipts and the seat prompts, so
+ * a seat can never exist in one surface and be missing from another.
+ *
+ * The list grew from three to six: the factory runs architect, planner,
+ * coder, tester and reviewer (plus vision on demand), and the old trio
+ * folded the tester and the reviewer onto the CODER - so one model wrote the
+ * code, ran the tests and signed off on its own work. Every seat can now
+ * have its own model; the legacy slot mapping is the fallback.
  */
-const CREW_SEATS: Array<{ env: string; role: CrewRole }> = [
-  { env: 'FACTORY_CREW_PLANNER_MODEL', role: 'planner' },
-  { env: 'FACTORY_CREW_CODER_MODEL', role: 'coder' },
-  { env: 'FACTORY_CREW_VISION_MODEL', role: 'vision' },
-]
+const CREW_SEATS: Array<{ env: string; role: CrewRole }> = CREW_ROLES.map(role => ({
+  env: crewRoleEnvName(role),
+  role,
+}))
 
 /** The live seat resolution: `planner X · coder Y · vision Z`. */
 function crewSeatLine(): string {
   return CREW_SEATS.map(({ role }) => `${role} ${resolveCrewModel(role)}`).join(' · ')
+}
+
+/**
+ * The receipt after a crew profile is applied: which seats DEVIATE from the
+ * route, and how many simply ride it.
+ *
+ * With six seats, naming all of them made a two-line toast that said the
+ * same thing six times. The operator's question is "what is NOT the route?",
+ * so that is what the receipt answers - and the count keeps the rest honest.
+ */
+function crewSeatReceipt(route: string): string {
+  const seats = CREW_SEATS.map(({ role }) => ({
+    role,
+    model: resolveCrewModel(role),
+  }))
+  const deviating = seats.filter(seat => seat.model !== route)
+  const onRoute = seats.length - deviating.length
+  const named = deviating.map(seat => `${seat.role} ${seat.model}`).join(' · ')
+  if (named.length === 0) return `${onRoute} seats on ${route}`
+  return `${onRoute} on ${route} · ${named}`
 }
 
 /**
@@ -1332,17 +1499,16 @@ function crewSeatLine(): string {
  * named TWO models for one session and neither could be trusted (operator,
  * 2026-11-04: "the banner says qwen, the meter says gemma").
  *
- * A crew's seats map to the pipeline slots BY POSITION — planner, coder,
- * vision — exactly the way `applyCrew` writes the env slots, so the two can
- * never describe different routings. A crew that does not fill a seat leaves
- * that seat on the env profile, which is the honest reading of "this team has
- * no planner".
+ * A crew's seats map to the pipeline seats BY ROLE NAME — the same way
+ * `applyCrew` writes the env slots, so the two can never describe different
+ * routings. A crew that does not fill a seat leaves that seat on the env
+ * profile, which is the honest reading of "this team has no reviewer".
  */
 export function crewSeatModels(crew: Crew | null = activeCrew(), env: NodeJS.ProcessEnv = process.env): Array<{ role: CrewRole; model: string }> {
-  return CREW_SEATS.map(({ role }, index) => {
-    const stored = (crew?.seats[index]?.model ?? '').trim()
-    return { role, model: stored || resolveCrewModel(role, env) }
-  })
+  return CREW_SEATS.map(({ role }) => ({
+    role,
+    model: crewSeatModel(crew, role, env),
+  }))
 }
 
 /**
@@ -1702,7 +1868,7 @@ export const PALETTE: SelectOption[] = [
   { title: '/create', desc: 'create a team (name + model per seat)', footer: 'create', value: '/create ' },
   { title: '/status', desc: 'route · model · pool · shape', footer: 'status', value: '/status' },
   { title: '/doctor', desc: 'readiness check, read-only', footer: 'doctor', value: '/doctor' },
-  { title: '/stats', desc: 'token usage this session', footer: 'stats', value: '/stats' },
+  { title: '/stats', desc: 'tokens · wall clock · cost, per seat', footer: 'stats', value: '/stats' },
   { title: '/display', desc: 'transcript density: quiet · normal · verbose', footer: 'display', value: '/display ' },
   { title: '/debug', desc: 'live route · seats · paths', footer: 'debug', value: '/debug' },
   { title: '/update', desc: 'check npm; offer to install the pinned newer release', footer: 'update', value: '/update' },
@@ -1713,12 +1879,14 @@ export const PALETTE: SelectOption[] = [
   { title: '/q', desc: 'leave the harness', footer: 'exit', value: '/q' },
   { title: '/agents', desc: 'crew profile · seat models', footer: 'agents', value: '/agents' },
   { title: '/crew', desc: 'list · select · edit · delete teams', footer: 'crew', value: '/crew' },
+  { title: '/team', desc: 'how the team works: shape · repairs · budget · test', footer: 'team', value: '/team' },
+  { title: '/templates', desc: 'save · list · run a request again', footer: 'templates', value: '/templates' },
   { title: '/model', desc: 'all models from all connections · pick a role for one', footer: 'model', value: '/model ' },
   { title: '/tasks', desc: 'list persisted Hermes tasks', footer: 'tasks', value: '/tasks' },
   { title: '/result', desc: 'inspect a stored task and result', footer: '<id>', value: '/result ' },
   { title: '/events', desc: 'inspect persisted Factory events', footer: '<id>', value: '/events ' },
   { title: '/run', desc: 'preview and approve a queued/failed task', footer: '<id>', value: '/run ' },
-  { title: '/review', desc: 'review the workspace diff', footer: 'review', value: '/review' },
+  { title: '/review', desc: 'review the workspace diff · accept or reject it', footer: 'review', value: '/review' },
   { title: '/health', desc: 'factory health meter + history', footer: 'health', value: '/health' },
   { title: '/exit', desc: 'leave the harness', footer: 'exit', value: '/exit' },
 ]
@@ -1787,10 +1955,10 @@ function applyAgentProfile(profile: string): { note: string; applied: boolean } 
   }
   if (profile === 'duo') {
     delete process.env.FACTORY_CREW_VISION_MODEL
-    return { note: `crew: duo · vision slot cleared (falls back to ${resolveCrewModel('vision')})`, applied: true }
+    return { note: `crew: duo · vision seat cleared (falls back to ${resolveCrewModel('vision')})`, applied: true }
   }
   for (const { env } of CREW_SEATS) process.env[env] ||= route
-  return { note: `crew: trio · ${crewSeatLine()}`, applied: true }
+  return { note: `crew: trio · ${crewSeatReceipt(route)}`, applied: true }
 }
 
 /**
@@ -1948,7 +2116,7 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
     // than the help page does.
     const groups: Array<[string, string[]]> = [
       ['session', ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q']],
-      ['setup', ['/connect', '/create', '/model', '/agents', '/crew', '/onboard']],
+      ['setup', ['/connect', '/create', '/model', '/agents', '/crew', '/team', '/templates', '/onboard']],
       ['work', ['/tasks', '/result', '/events', '/run', '/review', '/health']],
       ['system', ['/update']],
       ['help', ['/help']],
@@ -2567,7 +2735,10 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
   // already on screen keep the shape they were read in.
   let density: DisplayMode = loadDisplay()
   const sink: RunSink = {
-    event: (type, role, detail) => {
+    // The attention bell (2026-11-07): the screen owns the alternate buffer,
+    // so the bell travels through the screen's own writer.
+    bell: bytes => screen.bell(bytes),
+    event: (type, role, detail, payload) => {
       // Side panel: live token accounting for the session. The ceiling is
       // the DSH worker session window on the local route (13,312).
       if (state.side) {
@@ -2608,6 +2779,11 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
           ? activityDetail(detail.activity)
           : detail?.detail ?? detail?.tool ?? detail?.note,
         detail?.status,
+        // The LANE facts (2026-11-05). A duel with three lanes racing three
+        // different models must show three rows, each with its own model -
+        // otherwise the operator cannot tell WHICH small model is winning
+        // the race, which is the whole point of a team.
+        payload,
       )
       // Live activity: the row is rewritten in place as the seat works.
       if (type === 'agent.activity' && detail?.activity) {
@@ -2755,7 +2931,14 @@ type GateResult = 'approved' | 'cancelled' | 'blocked'
 
 async function approveOrBlock(ui: ReplUi, task: EngineeringTask): Promise<GateResult> {
   const blocker = liveConfigBlocker()
-  if (!blocker) return (await ui.approve(task)) ? 'approved' : 'cancelled'
+  if (!blocker) {
+    // THE PERMISSION BELL (2026-11-07). The approval card is the one moment
+    // where the run is genuinely waiting for the operator, so it always
+    // rings: an operator who looked away must be able to come back to a
+    // waiting card rather than to a frozen-looking screen.
+    announce('permission', 0)
+    return (await ui.approve(task)) ? 'approved' : 'cancelled'
+  }
   ui.error(`blocked before approval: ${blocker.message}`)
   ui.note(blocker.remedy)
   return 'blocked'
@@ -2789,8 +2972,8 @@ async function seatChoiceModel(ui: ReplUi, choice: string): Promise<string | nul
   if (choice.startsWith('route:')) return choice.slice('route:'.length)
   if (choice.startsWith('seat:')) {
     const env = choice.slice('seat:'.length)
-    const role = env === 'FACTORY_CREW_PLANNER_MODEL' ? 'planner' : env === 'FACTORY_CREW_CODER_MODEL' ? 'coder' : 'vision'
-    return resolveCrewModel(role)
+    const entry = CREW_SEATS.find(seat => seat.env === env)
+    return resolveCrewModel(entry?.role ?? 'coder')
   }
   // crew: / section headers / noop rows are not a model for a single seat.
   return null
@@ -2824,10 +3007,18 @@ async function pickSeatModel(ui: ReplUi, role: string, current: string): Promise
 /**
  * The team-creation flow, shared by `/crew create` and `/create [name]` so the
  * two verbs can never drift apart. A name given on the command line skips the
- * first prompt. Seat roles name MODEL SLOTS (planner/coder/vision), not
- * pipeline stages; extras are display seats. Each seat's model is PICKED from
- * the model plate (pickSeatModel) — the operator chooses the models and the
- * team is made of them.
+ * first prompt.
+ *
+ * THE SEATS ARE THE REAL ONES (2026-11-05). The flow used to staff
+ * "planner / coder / vision" and fold every other pipeline stage onto the
+ * coder, so the tester and the reviewer ran on the coder's model - one model
+ * wrote the code, ran the tests and signed off on its own work. The seats
+ * are now the six the factory really runs, and the operator can give the
+ * reviewer its own model.
+ *
+ * The SHAPE is part of the team too (2026-11-05): solo, duel, vote and relay
+ * were env vars with no UI, so "staffing a team" meant picking models and
+ * nothing else.
  */
 async function crewCreateFlow(ui: ReplUi, nameArg?: string): Promise<void> {
   const { addCrew, applyCrew } = await import('./crew-store')
@@ -2840,31 +3031,41 @@ async function crewCreateFlow(ui: ReplUi, nameArg?: string): Promise<void> {
     return
   }
   if (!name) return
-  // Seat roles name MODEL SLOTS, not pipeline stages: the pipeline runs
-  // architect → planner → coder → tester → reviewer, and crewSlotFor() folds
-  // every non-vision stage onto the coder slot. The first three seats hold the
-  // three slots; extras are display seats the dock shows when events name them.
-  const roles = ['planner', 'coder', 'vision']
+
+  const roles = [...CREW_ROLES]
+  const coreRoles = ['architect', 'planner', 'coder', 'tester', 'reviewer']
   const defaultModel = process.env.DSH_LLM_MODEL ?? 'qwen2.5-coder-3b-instruct'
   const seats: { role: string; model: string }[] = []
   // ONE shape pick instead of "how many seats? then a plate per seat"
   // (2026-11-01): /create used to ask three-to-four questions before a single
-  // model was chosen, which is the clunky flow the operator flagged. The
-  // common team is the same model in all three slots, and now it is one Enter.
+  // model was chosen, which is the clunky flow the operator flagged.
   let shape: string | undefined
   if (ui.select) {
     shape = await ui.select(`Team "${name}" — how is it staffed?`, [
-      { title: '3 seats · same model', desc: defaultModel, footer: '1 pick', value: 'same-3' },
-      { title: '3 seats · pick one per role', desc: 'planner · coder · vision', value: 'pick-3' },
-      { title: '1 seat · same model', desc: defaultModel, footer: 'solo', value: 'same-1' },
+      { title: 'Every seat · same model', desc: `${roles.length} seats · ${defaultModel}`, footer: '1 pick', value: 'same-all' },
+      { title: 'Every seat · its own model', desc: roles.join(' · '), value: 'pick-all' },
+      { title: 'Core team · a model per role', desc: coreRoles.join(' · '), value: 'pick-core' },
+      { title: 'Trio · planner coder vision', desc: 'the classic three', value: 'pick-trio' },
       { title: 'Custom size…', desc: 'choose the seats and each model', value: 'custom' },
     ])
     ui.redraw?.()
     if (shape === undefined) return
   }
-  if (shape === 'same-3' || shape === 'same-1') {
-    const size = shape === 'same-3' ? 3 : 1
-    for (let i = 0; i < size; i++) seats.push({ role: roles[i]!, model: defaultModel })
+  if (shape === 'same-all' || shape === 'same-1') {
+    for (const role of roles) seats.push({ role, model: defaultModel })
+  } else if (shape === 'pick-trio') {
+    for (const role of ['planner', 'coder', 'vision']) {
+      const model = await pickSeatModel(ui, role, defaultModel)
+      if (model === undefined) return
+      seats.push({ role, model })
+    }
+  } else if (shape === 'pick-core') {
+    for (const role of coreRoles) {
+      const model = await pickSeatModel(ui, role, defaultModel)
+      if (model === undefined) return
+      seats.push({ role, model })
+    }
+    seats.push({ role: 'vision', model: defaultModel })
   } else {
     const sizeStr = shape === 'custom' || !ui.select
       ? await ui.ask('Number of seats (1, 2, 3, ...): ')
@@ -2879,12 +3080,30 @@ async function crewCreateFlow(ui: ReplUi, nameArg?: string): Promise<void> {
       seats.push({ role, model })
     }
   }
-  const crew = addCrew(name, seats)
+
+  // The SHAPE (2026-11-05): solo / duel / vote / relay were env-only, so the
+  // operator could staff WHO but never HOW the team works.
+  let policy: { shape?: string } | undefined
+  if (ui.select) {
+    const teamShape = await ui.select(`Team "${name}" — how does it work?`, [
+      { title: 'auto', desc: 'the task difficulty decides the shape', footer: 'default', value: 'auto' },
+      { title: 'solo', desc: 'one seat, no racing', value: 'solo' },
+      { title: 'duel', desc: 'two seats race, the better one wins', value: 'duel' },
+      { title: 'vote', desc: 'three ballots, the majority decides', value: 'vote' },
+      { title: 'relay', desc: 'seats hand the work to each other', value: 'relay' },
+    ])
+    ui.redraw?.()
+    if (teamShape === undefined) return
+    if (teamShape !== 'auto') policy = { shape: teamShape }
+  }
+
+  const crew = addCrew(name, seats, policy)
   applyCrew(crew)
   ui.crewChanged?.()
-  // The receipt says how many seats ROUTE, not just how many exist: only the
-  // first three map to a pipeline slot, and the extras are display seats.
+  // The receipt says how many seats ROUTE, not just how many exist: a seat
+  // named 'worker-4' has no pipeline role and routes nothing.
   ui.note(`team created: ${crew.name} · ${crewSeatSummary(crew)} · ${crew.seats.map(s => `${s.role}=${s.model}`).join(' ')}`)
+  if (policy?.shape) ui.note(`team shape: ${policy.shape} · change it anytime with: /team`)
   ui.note(`select it anytime with: /model ${crew.name}`)
 }
 
@@ -2901,11 +3120,17 @@ async function crewEditFlow(ui: ReplUi, target: Crew): Promise<void> {
     ? Math.max(1, parseInt(sizeStr, 10) || target.seats.length)
     : target.seats.length
   const defaultModel = process.env.DSH_LLM_MODEL ?? 'qwen2.5-coder-3b-instruct'
-  const roles = ['planner', 'coder', 'vision']
+  const roles = [...CREW_ROLES]
   const seats: { role: string; model: string }[] = []
   for (let i = 0; i < newSize; i++) {
     const role = i < roles.length ? roles[i]! : `worker-${i + 1}`
-    const oldModel = target.seats[i]?.model ?? defaultModel
+    // Keep the model this seat ALREADY has when it still has one, so editing a
+    // team does not silently reset the reviewer to the default (2026-11-05).
+    const oldModel = (
+      target.seats.find(seat => seat.role === role)?.model ??
+      target.seats[i]?.model ??
+      defaultModel
+    )
     // Same picker as /create: dismiss keeps the old model, a pick (plate row
     // or custom id) replaces it.
     const picked = await pickSeatModel(ui, role, oldModel)
@@ -2916,6 +3141,87 @@ async function crewEditFlow(ui: ReplUi, target: Crew): Promise<void> {
   const updated = loadCrews().crews.find(c => c.id === target.id)
   if (updated && updated.id === loadCrews().active) { applyCrew(updated); ui.crewChanged?.() }
   ui.note(`crew updated: ${updated?.name} · ${updated?.seats.length} seat${(updated?.seats.length ?? 0) === 1 ? '' : 's'}`)
+}
+
+/**
+ * `/team` - how the team WORKS, not who is in it (2026-11-05).
+ *
+ * A crew used to be a name plus a list of models. Everything else that
+ * decides whether a run succeeds - the shape (solo/duel/vote/relay), the
+ * repair cap, the token and dollar budgets, the verification command, the
+ * files every task must produce - was an ENV VAR with no UI at all. The
+ * operator was "staffing a team" by picking models and nothing else, and
+ * the shape shown in `/status` was the session's env rather than their
+ * team's.
+ *
+ * So `/team` shows the active team's policy and edits it. The edits are
+ * written back to the stored crew AND applied to the env the orchestrator
+ * reads, so the next request really runs the way the receipt says.
+ *
+ * The grammar is one word per setting, so it is usable over a pipe:
+ *   /team                      show the policy
+ *   /team shape solo           set the shape
+ *   /team repairs 3            cap the repair rounds
+ *   /team tokens 200000        cap the tokens
+ *   /team usd 0.50             cap the dollars
+ *   /team test "npm test"      the verification this team always runs
+ *   /team files src/a.ts,src/b.ts   files every task must produce
+ *   /team reset                clear the policy
+ */
+async function teamFlow(ui: ReplUi, arg: string): Promise<void> {
+  const { loadCrews, updateCrew, applyCrew, crewPolicyLines, parseTeamSetting } = await import('./crew-store')
+  const store = loadCrews()
+  const crew = store.crews.find(c => c.id === store.active)
+  if (!crew) {
+    ui.note('No active team. /create to build one, or /crew to pick one.')
+    return
+  }
+
+  // The value is read with the SAME tokenizer the composer uses, so a
+  // quoted value keeps its spaces AND loses its quotes: `/team test "npm
+  // test"` stores `npm test`, not `"npm test"`. A test command with the
+  // quotes still in it fails in a shell, and the receipt would have said the
+  // team verifies with something that cannot run.
+  const parts = tokenizeInline(arg.trim())
+  const key = (parts[0] ?? '').toLowerCase()
+  const value = parts.slice(1).join(' ').trim()
+
+  if (!key) {
+    // SHOW: the policy, in words, with the seats it applies to.
+    const lines = crewPolicyLines(crew.policy)
+    ui.note(`team: ${crew.name} · ${crew.seats.length} seat${crew.seats.length === 1 ? '' : 's'}`)
+    for (const line of lines) ui.note(`  ${line}`)
+    ui.note('  set: /team shape|repairs|tokens|usd|test|files <value> · clear: /team reset')
+    return
+  }
+
+  if (key === 'reset') {
+    updateCrew(crew.id, { policy: undefined })
+    const cleared = loadCrews().crews.find(c => c.id === crew.id)
+    if (cleared) applyCrew(cleared)
+    ui.crewChanged?.()
+    ui.note(`team policy cleared: ${cleared?.name ?? crew.name} · shape: auto`)
+    return
+  }
+
+  // The grammar is pure and tested on its own (`parseTeamSetting`), so a
+  // refused value NEVER half-applies.
+  const parsed = parseTeamSetting(key, value)
+  if (!parsed.ok) {
+    ui.error(parsed.error)
+    return
+  }
+
+  const policy = { ...(crew.policy ?? {}), ...parsed.patch }
+  updateCrew(crew.id, { policy })
+  const updated = loadCrews().crews.find(c => c.id === crew.id)
+  // The policy only takes effect for the ACTIVE team, and it takes effect
+  // NOW: the receipt says what the next request will really do.
+  if (updated && updated.id === store.active) {
+    applyCrew(updated)
+    ui.crewChanged?.()
+  }
+  ui.note(`team ${crew.name}: ${crewPolicyLines(updated?.policy).join(' · ')}`)
 }
 
 /**
@@ -3143,8 +3449,19 @@ export async function replLoop(
   }
 
   async function askLoop(): Promise<void> {
+  // A SAVED REQUEST can be run again (2026-11-05). The queue holds the
+  // request STRUCTURED, not as text: re-tokenizing a saved request would
+  // re-quote it, and a request whose quotes changed is a different request.
+  let queuedRequest: { text: string; tests: string[]; requiredFiles: string[] } | null = null
+  // The last thing the operator asked for, so `/templates save` has something
+  // to save without asking again. The FLAGS travel with it: a template is
+  // the request AND its verification.
+  let lastRequest = ''
+  let lastRequestFlags: { tests: string[]; requiredFiles: string[] } = { tests: [], requiredFiles: [] }
   for (;;) {
-    const input = await ui.ask('wednesday> ')
+    const input = queuedRequest !== null ? queuedRequest.text : await ui.ask('wednesday> ')
+    const pending = queuedRequest
+    queuedRequest = null
     if (input === undefined) { traceNote('composer.leave'); break }
     const line = input.trim()
     if (!line) continue
@@ -3267,6 +3584,94 @@ export async function replLoop(
         ui.error(`Unknown /crew subcommand: ${sub} (list, create, delete, edit)`)
         continue
       }
+      if (line === '/team' || line.startsWith('/team ')) {
+        // The team's POLICY: how it works, not who is in it. See teamFlow.
+        await teamFlow(ui, line.slice('/team'.length).trim())
+        continue
+      }
+      if (line === '/templates' || line.startsWith('/templates ')) {
+        // The requests the operator wants to run AGAIN. The store is the
+        // operator's own state home; the command is the surface.
+        const { deleteTemplate, findTemplate, loadTemplates, markTemplateUsed, saveTemplate } = await import('./task-templates')
+        const arg = line.slice('/templates'.length).trim()
+        const parts = arg.split(/\s+/).filter(Boolean)
+        const sub = (parts[0] ?? '').toLowerCase()
+        const name = parts.slice(1).join(' ').trim()
+        if (!sub || sub === 'list') {
+          const templates = loadTemplates()
+          if (templates.length === 0) {
+            ui.note('No templates yet. /templates save <name> saves the request you just made.')
+            continue
+          }
+          for (const template of templates) {
+            const uses = template.useCount ?? 0
+            ui.note(`  ${template.name}: ${templateSummary(template)}${uses > 0 ? ` · used ${uses}x` : ''}`)
+          }
+          continue
+        }
+        if (sub === 'save') {
+          if (!name) { ui.error('Usage: /templates save <name>'); continue }
+          if (!lastRequest) { ui.error('Nothing to save yet — make a request first.'); continue }
+          // A template is the request AND its verification. Saving only the
+          // prose would replay a request that no longer has the test it was
+          // written for, and a replay that fails for a different reason is a
+          // confusing replay. The values are LISTS: a request can carry two
+          // `--test` flags, and a comma-joined string cannot hold them
+          // safely (a test command may itself contain a comma).
+          const flags: Record<string, string[]> = {}
+          if (lastRequestFlags.tests.length > 0) flags.test = [...lastRequestFlags.tests]
+          if (lastRequestFlags.requiredFiles.length > 0) {
+            flags['required-file'] = [...lastRequestFlags.requiredFiles]
+          }
+          const saved = saveTemplate({
+            name,
+            request: lastRequest,
+            workspace: defaults.workspace,
+            ...(Object.keys(flags).length > 0 ? { flags } : {}),
+          })
+          ui.note(`template saved: ${saved.name} — "${templateSummary(saved)}"`)
+          continue
+        }
+        if (sub === 'show') {
+          if (!name) { ui.error('Usage: /templates show <name>'); continue }
+          const template = findTemplate(name)
+          if (!template) { ui.error(`No template named: ${name}`); continue }
+          ui.note(`template: ${template.name}`)
+          ui.note(`  request: ${template.request}`)
+          if (template.flags && Object.keys(template.flags).length > 0) {
+            ui.note(`  flags: ${templateFlagLines(template).join(' ')}`)
+          }
+          if (template.useCount) ui.note(`  used ${template.useCount}x · last ${new Date(template.lastUsedAt ?? template.createdAt).toLocaleString('en-US')}`)
+          continue
+        }
+        if (sub === 'run') {
+          if (!name) { ui.error('Usage: /templates run <name>'); continue }
+          const template = findTemplate(name)
+          if (!template) { ui.error(`No template named: ${name}`); continue }
+          markTemplateUsed(template.id)
+          // The saved request runs through the SAME path a typed one does:
+          // the intent router, the approval gate, the team. Nothing about a
+          // replayed request is special, which is the point.
+          const flags = templateFlags(template)
+          queuedRequest = {
+            text: template.request,
+            tests: flags.tests,
+            requiredFiles: flags.requiredFiles,
+          }
+          ui.note(`running template: ${template.name}`)
+          continue
+        }
+        if (sub === 'delete') {
+          if (!name) { ui.error('Usage: /templates delete <name>'); continue }
+          const template = findTemplate(name)
+          if (!template) { ui.error(`No template named: ${name}`); continue }
+          deleteTemplate(template.id)
+          ui.note(`template deleted: ${template.name}`)
+          continue
+        }
+        ui.error(`Unknown /templates subcommand: ${sub} (list, save, show, run, delete)`)
+        continue
+      }
       if (line === '/create' || line.startsWith('/create ')) {
         // `/create [name]` is the top-level team verb; it runs the SAME flow as
         // `/crew create` (crewCreateFlow), so the two can never drift.
@@ -3346,27 +3751,32 @@ export async function replLoop(
         continue
       }
       if (line === '/update') {
-        // Force a registry check (bypasses the daily cache). When a newer
-        // release exists, ask ONCE and, on yes, install the EXACT pinned
-        // version from the official registry via npm (see updater.ts).
-        // Piped/scripted runs never prompt — they just get the command.
+        // Say what the registry ACTUALLY said (2026-11-07, operator report:
+        // "the /update command does not work"). The old path collapsed every
+        // outcome into "up to date" — including a FAILED check and a local
+        // build that is AHEAD of the published release — so the command looked
+        // broken even when it had checked nothing at all.
         const pkg = createRequire(import.meta.url)('../../package.json') as { version?: string }
         const version = typeof pkg.version === 'string' ? pkg.version : 'unknown'
-        const channel = channelOf(version)
         const { installUpdate, updateCommandLine } = await import('./updater')
         // A registry check can spend seconds behind a dead network. Say so
         // before awaiting it: the old path went silent, and a silent screen
         // under a typed command is indistinguishable from a freeze.
         ui.progress?.('checking npm for a newer release…')
-        const found = await resolveUpdate({ version, stateDir: STATE_HOME, force: true })
-        if (!found) {
-          await emitBlock(ui, `wednesday ${version} · npm channel "${channel}"\nup to date — no newer release on npm for channel "${channel}".`, 'Update')
+        const status = await checkUpdate({ version, stateDir: STATE_HOME, force: true })
+        // Is the running install a published package or a LINK to a working
+        // tree? On a developer link the local version is the source tree's
+        // own version, which is usually newer than npm's — the command has
+        // to say that instead of pretending it is "up to date".
+        const install = detectLocalInstall()
+        await emitBlock(ui, updateStatusLines(status, install).join('\n'), 'Update')
+        if (status.kind !== 'available') {
+          // Nothing to install: the check failed, this build is ahead of the
+          // published release, or this version IS the published one. Each
+          // case is already explained on screen.
           continue
         }
-        await emitBlock(ui, [
-          `wednesday ${found.current} → ${found.remote} is available (npm channel "${channel}")`,
-          `install: ${updateCommandLine(found.remote)}   (exact pinned version, registry.npmjs.org over HTTPS)`,
-        ].join('\n'), 'Update')
+        const found = { current: status.current, remote: status.remote, channel: status.channel }
         let yes = false
         if (ui.confirm) {
           yes = await ui.confirm(
@@ -3464,35 +3874,73 @@ export async function replLoop(
         continue
       }
       if (line === '/stats') {
-        // Token usage for the LIVE session, by model. The registry is a
-        // module-level counter every provider records into, so this is the
-        // real spend since the process started - not a stored history an
-        // operator has to trust. Hermes' `/usage` grammar: a leading blank,
-        // an indented `✦` heading, then the numbers under it.
+        // Token usage for the LIVE session, by model AND BY SEAT.
+        //
+        // The model rows were the old answer and they stay: they say how much
+        // the SESSION cost. But the factory is a TEAM, and the operator's
+        // real question is "what did the REVIEWER seat cost me?" - which the
+        // model rows cannot answer when one model wears three name tags
+        // (2026-11-05: the tester and the reviewer ran on the coder's model,
+        // so one model wrote the code, ran the tests and signed off on its
+        // own work).
+        //
+        // So the seat rows come first: one line per teammate, with the
+        // WALL-CLOCK time, because for a locally hosted small model the
+        // real cost is GPU-minutes and a token meter cannot see it.
         const rows = usageSnapshot()
+        const seats = seatUsageByCost(seatUsageSnapshot())
         const mode = (process.env.FACTORY_EXECUTION_MODE ?? 'live').trim().toLowerCase()
-        if (rows.length === 0) {
+        const lines: string[] = ['', '  ✦ Session usage']
+        if (rows.length === 0 && seats.length === 0) {
           // Say "usage" in both branches so the answer reads as the same
           // command, whether the session has spent tokens or not.
-          await emitBlock(ui, [
-            '',
-            '  ✦ Session usage',
+          lines.push(
             mode === 'deterministic'
               ? '  Tokens: 0 — deterministic mode runs no model.'
               : '  Tokens: 0 — no model calls yet in this session.',
-          ].join('\n'), 'Usage')
+          )
         } else {
-          const wide = Math.max(...rows.map(row => `${row.provider}/${row.model}`.length))
           const total = rows.reduce((sum, row) => sum + row.promptTokens + row.completionTokens, 0)
           const calls = rows.reduce((sum, row) => sum + row.calls, 0)
-          await emitBlock(ui, [
-            '',
-            '  ✦ Session usage',
-            `  Tokens: ${total.toLocaleString('en-US')} across ${calls} call${calls === 1 ? '' : 's'}`,
-            ...rows.map(row =>
-              `  ${(`${row.provider}/${row.model}`).padEnd(wide)}  ${String(row.promptTokens).padStart(7)} in  ${String(row.completionTokens).padStart(7)} out  (${row.calls}x)`),
-          ].join('\n'), 'Usage')
+          const wall = seats.reduce((sum, seat) => sum + seat.elapsedMs, 0)
+          lines.push(`  Tokens: ${total.toLocaleString('en-US')} across ${calls} call${calls === 1 ? '' : 's'}`)
+          if (wall > 0) {
+            lines.push(`  Wall clock: ${formatDurationMs(wall)} across ${seats.length} seat${seats.length === 1 ? '' : 's'}`)
+          }
+          if (seats.length > 0) {
+            lines.push('')
+            lines.push('  ✦ Team')
+            const seatWide = Math.max(...seats.map(seat => seat.seat.length))
+            let anyUnpriced = false
+            for (const seat of seats) {
+              const tokens = seat.promptTokens + seat.completionTokens
+              const cost = estimateSeatCostUsd(seat)
+              // A seat with no price says SO. A blank column reads like a
+              // broken receipt; "unpriced" reads like a fact, and it is
+              // fixable: the operator sets FACTORY_PRICE_<MODEL> and the
+              // next receipt carries dollars.
+              if (cost === null) anyUnpriced = true
+              const costText = cost === null ? '  unpriced' : `  $${cost.toFixed(4)}`
+              lines.push(
+                `  ${seat.seat.padEnd(seatWide)}  ${seat.model}  ${formatTokenCount(tokens).padStart(7)} tokens  ${formatDurationMs(seat.elapsedMs).padStart(8)}${costText}`,
+              )
+            }
+            if (anyUnpriced) {
+              lines.push('  (set FACTORY_PRICE_<MODEL>=<input>,<output> for USD per Mtok to price a seat)')
+            }
+          }
+          if (rows.length > 0) {
+            lines.push('')
+            lines.push('  ✦ Models')
+            const wide = Math.max(...rows.map(row => `${row.provider}/${row.model}`.length))
+            for (const row of rows) {
+              lines.push(
+                `  ${(`${row.provider}/${row.model}`).padEnd(wide)}  ${String(row.promptTokens).padStart(7)} in  ${String(row.completionTokens).padStart(7)} out  (${row.calls}x)`,
+              )
+            }
+          }
         }
+        await emitBlock(ui, lines.join('\n'), 'Usage')
         continue
       }
       if (line === '/display' || line.startsWith('/display ')) {
@@ -3610,6 +4058,10 @@ export async function replLoop(
         // is a 500-line wall that scrolls the receipt off the screen — a review
         // nobody reads. `/review <file>` narrows to one path; `/review all`
         // prints the whole patch for the rare time you actually want it.
+        //
+        // AND IT CAN BE ACTED ON (2026-11-05): `/review accept` stages the
+        // change, `/review reject` puts it back. A review the operator cannot
+        // act on is a screenshot.
         const where = defaults.workspace
         const run = (args: string[]): string | null => {
           const done = spawnSync('git', ['-C', where, ...args], { encoding: 'utf8', windowsHide: true })
@@ -3620,6 +4072,42 @@ export async function replLoop(
           continue
         }
         const status = run(['status', '--porcelain']) ?? ''
+        // The DECISION verbs come first: they do not need a dirty workspace to
+        // be understood, and they act on the last run's own files.
+        const verb = line.slice('/review'.length).trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+        if (verb === 'accept' || verb === 'reject') {
+          const { acceptFiles, rejectFiles } = await import('./diff-decisions')
+          const { lastRun } = await import('./last-run')
+          const named = line.slice('/review'.length).trim().split(/\s+/).slice(1).join(' ').trim()
+          // The scope is the LAST RUN's files when we know them, so "reject"
+          // never sweeps away the operator's own untracked scratch files.
+          const remembered = lastRun()
+          const candidates = remembered && remembered.workspace === where
+            ? remembered.filesChanged
+            : []
+          let targets = candidates
+          if (named) {
+            targets = candidates.length > 0
+              ? candidates.filter(file => file.includes(named))
+              : status.split('\n').map(row => row.slice(3).trim()).filter(Boolean).filter(file => file.includes(named))
+          }
+          if (targets.length === 0) {
+            ui.error(
+              named
+                ? `No changed file matches: ${named}`
+                : 'nothing to ' + verb + ' - no files were changed by the last run',
+            )
+            continue
+          }
+          const decision = verb === 'accept'
+            ? acceptFiles(where, targets)
+            : rejectFiles(where, targets)
+          for (const row of decision.lines) {
+            if (/^could not|^refused/.test(row)) ui.error(row)
+            else ui.note(row)
+          }
+          continue
+        }
         if (!status) {
           ui.note('workspace is clean - nothing to review.')
           continue
@@ -3743,7 +4231,13 @@ export async function replLoop(
           else if (ui.page) await ui.page(`Task ${id}`, taskDetailLines(record, viewWidth()).map(row => row.text))
           else ui.block?.(taskDetailLines(record, viewWidth()))
         } else if (command === '/events') {
-          const events = await bus.list(id)
+          // The report, not just the list: a torn line in the log (a writer
+          // that was killed mid-append) must be VISIBLE, not silently
+          // dropped. The events that survived are still shown.
+          const { events, damaged } = await bus.read(id)
+          if (damaged > 0) {
+            ui.note(`${damaged} line(s) in the event log could not be read (a killed run left a torn write) — the rest is shown.`)
+          }
           if (raw) ui.note(JSON.stringify(events, null, 2))
           else if (ui.page) await ui.page(`Events ${id}`, eventTrailLines(events, viewWidth()).map(row => row.text))
           else ui.block?.(eventTrailLines(events, viewWidth()))
@@ -3795,21 +4289,62 @@ export async function replLoop(
       // / and everything freezes" (2026-10-16). With the watcher the terminal
       // stays in raw mode and a press means "forget this request".
       const inline = parseInlineFlags(line)
+      if (pending) {
+        // A saved request carries its own flags; merge them with whatever the
+        // saved line itself carried.
+        inline.tests.push(...pending.tests)
+        inline.requiredFiles.push(...pending.requiredFiles)
+      }
+      if (inline.objective) {
+        lastRequest = inline.objective
+        // The verification the operator gave THIS request. It is what makes
+        // a saved template a faithful replay instead of a bare sentence.
+        lastRequestFlags = {
+          tests: [...inline.tests],
+          requiredFiles: [...inline.requiredFiles],
+        }
+      }
       if (!inline.objective) throw new Error('Supply a request first (flags alone do not run anything).')
+      // WHO answers (2026-11-05): an `@reviewer ...` request is addressed to
+      // that seat, and the address is stripped before the model reads it.
+      // A team is only a team if the operator can talk to one member of it.
+      const addressed = parseChatAddress(inline.objective.trim())
+      const chatRequest = addressed ? addressed.text : inline.objective.trim()
        // Intent router (2026-10-30, chunk 4): the referee between chat and
        // build. Questions and conversation answer directly (streamed, with
        // session memory); build work runs the pipeline and the approval
        // gate. BUILD signals win, chat is the default remainder — a wrong
        // build costs one denied card, a wrong chat silently builds nothing.
-       const intent = classifyIntent(inline.objective.trim())
-       if (intent.intent === 'chat' && inline.objective.trim().length > 1) {
+       const intent = classifyIntent(chatRequest)
+       if (intent.intent === 'chat' && chatRequest.length > 1) {
+         // "Tell me about you" (2026-11-07, operator report: "Wednesday never
+         // tells"): answered LOCALLY, instantly.
+         //
+         // The old path spent a real model call to produce a refusal — the
+         // identity doctrine told the model to decline any question about
+         // Wednesday — so the operator paid for latency, tokens and a dead
+         // end, and the refusal was then stored in the chat history.
+         //
+         // This answer costs nothing, needs no provider configured, and ends
+         // with the next command to run: an answer that only refuses teaches
+         // the operator nothing, and that is where a session dies.
+         if (isAboutQuestion(chatRequest)) {
+           await emitBlock(ui, aboutAnswer(), 'Wednesday')
+           continue
+         }
          // Chat (2026-10-30, real chat loop): a question is a conversation
          // turn — streamed in pieces, carried with session memory, routed
-         // to the ACTIVE CREW's conversational seat (the team the operator
-         // built and selected), not one hardcoded model. Concrete build
-         // work below this gate still runs the factory pipeline.
+         // to a REAL SEAT of the active crew (the team the operator built
+         // and selected), not one hardcoded model. Concrete build work below
+         // this gate still runs the factory pipeline.
          const crew = activeCrew()
-         const seatModel = crew?.seats[0]?.model?.trim() ?? ''
+         // The seat is chosen by ROLE, not by ARRAY INDEX (2026-11-05). It
+         // used to be `crew.seats[0]`, so a crew whose first seat was the
+         // vision model sent every question to the vision model.
+         const seat = addressed
+           ? { role: addressed.role, model: chatSeatModel(crew, addressed.role) }
+           : pickChatSeat(crew)
+         const seatModel = seat?.model.trim() ?? ''
          const resolved = resolveChatRoute(seatModel)
          if ('blocker' in resolved) {
            ui.note(`Chat blocked: ${resolved.blocker}`)
@@ -3822,6 +4357,11 @@ export async function replLoop(
            route = { ...route, model: seatModel }
          } else if (seatModel) {
            ui.note(`Crew seat ${seatModel} does not fit the ${route.name} route — using ${route.model}.`)
+         }
+         // The receipt says WHO answered: an addressed turn must not look
+         // like a question to the default model.
+         if (addressed) {
+           ui.note(`${addressed.raw} → ${seat?.role ?? 'chat'} seat${seatModel ? ` (${seatModel})` : ''}`)
          }
          // Auto-compaction BEFORE the request (2026-11-01): at ≥67% of the
          // window keep room to work, at ≥87% keep only the newest exchange.
@@ -3857,13 +4397,20 @@ export async function replLoop(
          let answerText = ''
          let chatPhase: 'reasoning' | 'answering' = 'reasoning'
          const paintLive = (outcome: 'ok' | 'failed' = 'ok'): void => {
-           ui.live?.(liveKey, chatLiveRow(reasoningText, answerText, chatPhase, outcome))
+           // THE LIVE RATE (2026-11-07). OpenCode's footer carries a
+           // tokens/sec readout, and for a product built on SMALL open
+           // models it is the most honest engagement signal there is: a
+           // spinner says "something is happening", a rate says "the model
+           // is producing 34 tokens a second". It is an estimate (there is
+           // no tokenizer for the served model), so the row says so.
+           const rate = throughput(answerText, Date.now() - chatStartedAt, route.model)
+           ui.live?.(liveKey, chatLiveRow(reasoningText, answerText, chatPhase, outcome, rate))
          }
          // The activity line names the real thing while the chat is live:
          // who is answering and whether it is thinking or answering. It used
          // to fall back to a rotating decorative verb ("winding…"), which
          // said nothing about a chat at all.
-         ui.chatActivity?.({ role: 'chat', detail: 'thinking' })
+         ui.chatActivity?.({ role: seat?.role ?? 'chat', detail: 'thinking' })
          // The answer arrives in pieces; the terminal wants lines. Deltas
          // buffer to the next newline (an 80-column guard flushes one very
          // long unbroken line), so streaming reads as text, not fragments.
@@ -3876,7 +4423,7 @@ export async function replLoop(
              answering = true
              thinkingOpen = false
              chatPhase = 'answering'
-             ui.chatActivity?.({ role: 'chat', detail: 'answering' })
+             ui.chatActivity?.({ role: seat?.role ?? 'chat', detail: 'answering' })
              if (thinkBuf.trim()) ui.block?.([{ text: `  │ ${thinkBuf.trim()}`, tone: 'dim' }])
              thinkBuf = ''
            }
@@ -3949,9 +4496,12 @@ export async function replLoop(
              thinkBuf = ''
            }
          }
-         try {
-           const userText = inline.objective.trim()
-           // Memory only on a completed turn: a failed or halted exchange is
+           try {
+             // The model reads the QUESTION, not the routing directive: the
+             // `@reviewer` prefix is how the operator picked a seat, not part
+             // of what they asked.
+             const userText = chatRequest
+             // Memory only on a completed turn: a failed or halted exchange is
            // not remembered, so the next turn keeps question/answer order.
            const answer = await chatComplete(
              route,
@@ -3986,7 +4536,16 @@ export async function replLoop(
            const cost = answer.tokensIn || answer.tokensOut
              ? ` · ${answer.tokensIn} in / ${answer.tokensOut} out`
              : ''
-           ui.note(`⋯ ${seconds}s · ${route.name}/${route.model}${cost}`)
+           // THE RATE IN THE RECEIPT (2026-11-07). The receipt already says
+           // how long the turn took and what it cost; the rate is the one
+           // number that tells the operator what to expect on the NEXT turn
+           // with this model, and for small open models that is the number
+           // they actually plan around.
+           const speed = formatThroughputNote(
+             throughput(answer.text, Date.now() - chatStartedAt, route.model),
+           )
+           ui.note(`⋯ ${seconds}s · ${route.name}/${route.model}${cost}${speed ? ` · ${speed}` : ''}`)
+           announce('done', Date.now() - chatStartedAt)
            if (!chatTipShown) {
              chatTipShown = true
              ui.note('Tip: to build something, phrase it as a task — e.g. "Add a hello world function --test \"node -e \\\"console.log(42)\\\"\""')
@@ -4007,6 +4566,10 @@ export async function replLoop(
            // `thinking`. A row that still claims to be thinking after the
            // turn is over is a lie the operator has to read past.
            if (ui.live) paintLive('failed')
+           // A failed turn rings (2026-11-07): the operator may have
+           // looked away, and "nothing happened" is the worst possible
+           // thing to find when you come back.
+           announce('error', Date.now() - chatStartedAt)
            if (stopped) {
              ui.note('Chat stopped at your request — nothing was sent.')
            } else {
@@ -4049,7 +4612,17 @@ export async function replLoop(
       const stopBuildWatch = screen?.watchInterrupt(() => { buildCancelled = true }) ?? (() => {})
       let task: EngineeringTask
       try {
-        const auto = defaults.tests.length > 0 || inline.tests.length > 0
+        // The TEAM'S verification (2026-11-05). A crew can carry the test
+        // command its work always runs, so the operator does not retype
+        // `--test "npm test"` on every request against the same repo. The
+        // order is explicit-over-guess: this request's flag, then the
+        // session's flag, then the TEAM's setting, then the workspace
+        // guess. A team that says how it verifies beats a guess.
+        const activeTeam = activeCrew()
+        const policyTests = activeTeam?.policy?.testCommand
+          ? [activeTeam.policy.testCommand]
+          : []
+        const auto = inline.tests.length > 0 || defaults.tests.length > 0 || policyTests.length > 0
           ? null
           : detectDefaults(inline.workspace ?? defaults.workspace)
         if (auto && !hasProjectMarker(inline.workspace ?? defaults.workspace)) {
@@ -4064,8 +4637,18 @@ export async function replLoop(
         if (auto && hasProjectMarker(ws) && auto.tests.some(t => t.includes('npm test')) && !packageHasTestScript(ws)) {
           ui.note('Note: package.json has no "test" script — "npm test" will fail. Pass --test "command" to be exact.')
         }
-        const tests = inline.tests.length > 0 ? inline.tests : auto ? auto.tests : [...defaults.tests]
-        const requiredFiles = [...defaults.requiredFiles, ...inline.requiredFiles]
+        const tests = inline.tests.length > 0
+          ? inline.tests
+          : defaults.tests.length > 0
+            ? [...defaults.tests]
+            : policyTests.length > 0
+              ? policyTests
+              : auto ? auto.tests : []
+        const requiredFiles = [
+          ...defaults.requiredFiles,
+          ...inline.requiredFiles,
+          ...(activeTeam?.policy?.requiredFiles ?? []),
+        ]
         // makeTask walks the whole workspace (languages, key files, test files)
         // to build the plan, which on a real repo takes long enough to look like
         // a hang: the confirm card used to appear a beat after Enter with a dead

@@ -79,10 +79,9 @@ async function main(): Promise<void> {
     await rm(directory, { recursive: true, force: true })
   }
 
-  // createFactoryService() holds a cordis Context that keeps the event loop
-  // alive (same reason run-benchmark.ts exits explicitly at the CLI
-  // boundary); exit explicitly so the test terminates.
-  process.exit(0)
+  // The hermes store disposes the service it creates (the skill filesystem's
+  // watchers are closed with it), so the process ends on its own. No forced
+  // exit: that tears the handles down mid-close and libuv asserts on it.
 }
 
 void main().catch((error) => {

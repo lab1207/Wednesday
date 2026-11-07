@@ -99,13 +99,25 @@ async function main(): Promise<void> {
   try {
     const provider = new LocalProvider()
     assert.deepEqual(await provider.listModels(), ['test-local-model'])
+    // 2026-11-05: the local route now ASKS the server what it has, so the
+    // operator can staff a team from the models already on their own box.
+    // The configured id still wins the default pick, but the enumeration
+    // really happens.
+    assert.equal(
+      captured[0]?.url,
+      '/v1/models',
+      'the local route enumerates the server models',
+    )
     assert.equal(await provider.complete('test-local-model', 'hello'), 'LOCAL_OK')
 
-    assert.equal(captured[0]?.url, '/v1/chat/completions')
-    assert.equal(captured[0]?.authorization, 'Bearer test-local-key')
-    assert.equal(captured[0]?.body.model, 'test-local-model')
-    assert.equal(captured[0]?.body.messages?.[0]?.content, 'hello')
-    assert.equal(captured[0]?.body.stream, true)
+    const chatRequest = captured.find(
+      request => request.url === '/v1/chat/completions',
+    )
+    assert.ok(chatRequest, 'the chat request was sent')
+    assert.equal(chatRequest.authorization, 'Bearer test-local-key')
+    assert.equal(chatRequest.body.model, 'test-local-model')
+    assert.equal(chatRequest.body.messages?.[0]?.content, 'hello')
+    assert.equal(chatRequest.body.stream, true)
 
     const router = createModelRouter({
       FACTORY_LLM_PROVIDER: 'local',

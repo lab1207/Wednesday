@@ -38,9 +38,37 @@ class FakeChild extends EventEmitter {
   }
 }
 
+/**
+ * The UNCOOPERATIVE child: the real hang shape.
+ *
+ * The host is killed, but a grandchild still holds the inherited pipe, so
+ * `close` never fires. The old FakeChild emitted `close` from `kill()` --
+ * exactly like a well-behaved process tree -- which is why the suite stayed
+ * green while the operator's app froze (2026-11-07).
+ */
+class PipeHoldingChild extends EventEmitter {
+  stdout = new PassThrough()
+  stderr = new PassThrough()
+  kill(): boolean {
+    // Killed, but the pipe is still held by someone else.
+    return true
+  }
+}
+
 function fakeSpawn(behavior: (options: { cwd: string }, child: FakeChild) => void): ProofSpawn {
   return (_command, _args, options) => {
     const child = new FakeChild()
+    queueMicrotask(() => behavior(options, child))
+    return child as unknown as ProofChild
+  }
+}
+
+/** A spawn whose child behaves like a real, uncooperative process tree. */
+function pipeHoldingSpawn(
+  behavior: (options: { cwd: string }, child: PipeHoldingChild) => void,
+): ProofSpawn {
+  return (_command, _args, options) => {
+    const child = new PipeHoldingChild()
     queueMicrotask(() => behavior(options, child))
     return child as unknown as ProofChild
   }
@@ -206,7 +234,47 @@ async function main(): Promise<void> {
     rmSync(timeoutDir, { recursive: true, force: true })
   }
 
-  // 7. Both surfaces get the same rows; the failure carries one next action.
+  // 7. THE REAL SHAPE OF THE HANG (2026-11-07, operator report: "/proof
+  //    hangs all wednesday -- the project stops"). The host is killed but a
+  //    grandchild still holds the inherited pipe, so `close` never fires.
+  //    The receipt must STILL arrive, or the whole app waits forever.
+  const grandchildDir = tempDir()
+  try {
+    const receipt = await runProof({ note: () => {}, error: () => {} }, {
+      env: { FACTORY_LLM_PROVIDER: 'local', DSH_LLM_MODEL: 'qwen', LOCAL_LLM_BASE_URL: 'http://127.0.0.1:18090/v1' },
+      stateDir: grandchildDir,
+      timeoutMs: 25,
+      spawnImpl: pipeHoldingSpawn((_options, child) => {
+        // The process is gone; the pipes are not.
+        setImmediate(() => child.emit('exit', null, 'SIGKILL'))
+      }),
+    })
+    assert.equal(receipt.ok, false)
+    assert.match(receipt.detail, /no answer within/, 'an exit without close still settles the receipt')
+  } finally {
+    rmSync(grandchildDir, { recursive: true, force: true })
+  }
+
+  // 8. WORSE: the kill is refused and NO event ever arrives. The deadline
+  //    itself must settle the turn -- a receipt that waits for an event
+  //    that never comes is the freeze the operator reported.
+  const silentDir = tempDir()
+  try {
+    const receipt = await runProof({ note: () => {}, error: () => {} }, {
+      env: { FACTORY_LLM_PROVIDER: 'local', DSH_LLM_MODEL: 'qwen', LOCAL_LLM_BASE_URL: 'http://127.0.0.1:18090/v1' },
+      stateDir: silentDir,
+      timeoutMs: 25,
+      spawnImpl: pipeHoldingSpawn(() => {
+        // Nothing. Ever.
+      }),
+    })
+    assert.equal(receipt.ok, false)
+    assert.match(receipt.detail, /no answer within/, 'a dead tree still returns a receipt')
+  } finally {
+    rmSync(silentDir, { recursive: true, force: true })
+  }
+
+  // 9. Both surfaces get the same rows; the failure carries one next action.
   const passRows = proofLines({
     ok: true, detail: 'wrote proof.txt and read it back', seconds: 1.25,
     provider: 'openrouter', model: 'nvidia/x', workspace: 'C:\\state\\proof', answer: PROOF_TOKEN,
@@ -226,7 +294,7 @@ async function main(): Promise<void> {
   })
   assert.equal(blocks.length, 1, 'the screen path gets one toned block')
 
-  console.log('PROOF TEST: PASS (route precedence, artifact verdict, stale reset, pass/fail/timeout receipts, one next action)')
+  console.log('PROOF TEST: PASS (route precedence, artifact verdict, stale reset, pass/fail/timeout receipts, uncooperative process tree, one next action)')
 }
 
 main().catch(error => {

@@ -33,13 +33,6 @@ import {
 
 async function main(): Promise<void> {
   // ------------------------------------------------------------
-  // Model router
-  // ------------------------------------------------------------
-
-  const router = new RegistryModelRouter()
-  router.register(new OpenRouterProvider())
-
-  // ------------------------------------------------------------
   // DSH skill / ECC knowledge environment
   // ------------------------------------------------------------
 
@@ -51,6 +44,30 @@ async function main(): Promise<void> {
     dshHome: DSH_ROOT,
     agentsHome: DSH_AGENTS_HOME,
   })
+
+  // THE CONTEXT MUST BE DISPOSED (2026-11-06).
+  //
+  // This test used to leave the cordis context running, so the process
+  // NEVER EXITED: the run finished (or failed) and the event loop stayed
+  // alive forever. A test suite that hangs is worse than one that fails,
+  // because a sweep cannot report a red it never reached.
+  //
+  // `ctx.fiber.dispose()` unloads the plugins and releases the handles, so
+  // the process can exit the moment the work is done.
+  try {
+    await runOrchestration(ctx)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+async function runOrchestration(ctx: Context): Promise<void> {
+  // ------------------------------------------------------------
+  // Model router
+  // ------------------------------------------------------------
+
+  const router = new RegistryModelRouter()
+  router.register(new OpenRouterProvider())
 
   const knowledgeBuilder = new KnowledgeBuilder(
     new DshSkillAdapter(ctx),

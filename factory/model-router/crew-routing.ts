@@ -41,10 +41,78 @@ export function splitProviderPin(
   return { provider: head, model: trimmed.slice(sep + 1) }
 }
 
-export type CrewRole = 'planner' | 'coder' | 'vision'
+/**
+ * The THREE ROUTING SLOTS (2026-11-05).
+ *
+ * A slot is where a model LIVES: the trio has always been planner / coder /
+ * vision, each with its own endpoint (a T4 holds one Q4 model at a time, so
+ * each slot points at a different box). The slots did not change.
+ */
+export type CrewSlot = 'planner' | 'coder' | 'vision'
 
-/** Pipeline role → trio slot (pure). Unknown roles land on the coder. */
-export function crewSlotFor(role: string): CrewRole {
+/**
+ * The SEATS - the roles the factory actually runs.
+ *
+ * This is the honest list (2026-11-05). The factory's pipeline is
+ * architect -> planner -> coder -> tester -> reviewer (plus vision on
+ * demand), but the operator could only staff THREE seats, and
+ * `crewSlotFor` folded everything that was not 'architect', 'planner' or
+ * 'vision' onto the CODER. That is how the TESTER and the REVIEWER ended up
+ * running on the coder's model: one model typed the code, ran the tests, and
+ * signed off on its own work. A team of one wearing three name tags.
+ *
+ * Now every seat can have its own model, and the legacy mapping is kept as
+ * the FALLBACK so an unchanged profile behaves exactly as before.
+ */
+export type CrewRole =
+  | 'architect'
+  | 'planner'
+  | 'coder'
+  | 'tester'
+  | 'reviewer'
+  | 'vision'
+
+/** Every seat the factory runs, in pipeline order. */
+export const CREW_ROLES: readonly CrewRole[] = [
+  'architect',
+  'planner',
+  'coder',
+  'tester',
+  'reviewer',
+  'vision',
+]
+
+/** The env var that holds a seat's model. */
+export function crewRoleEnvName(role: CrewRole): string {
+  return `FACTORY_CREW_${role.toUpperCase()}_MODEL`
+}
+
+/** The env var that holds a seat's endpoint. */
+export function crewRoleBaseEnvName(role: CrewRole): string {
+  return `FACTORY_CREW_${role.toUpperCase()}_BASE_URL`
+}
+
+/**
+ * Is this string one of the real seats? (pure)
+ *
+ * A crew seat called 'worker-4' is a DISPLAY seat - it has no pipeline role
+ * and therefore no model slot. Saying so is the point.
+ */
+export function normalizeCrewRole(role: string): CrewRole | null {
+  const normalized = role.trim().toLowerCase()
+  return (CREW_ROLES as readonly string[]).includes(normalized)
+    ? (normalized as CrewRole)
+    : null
+}
+
+/**
+ * Pipeline role -> routing SLOT (pure).
+ *
+ * The slot says where the model lives; the seat says what the model is
+ * FOR. `tester` and `reviewer` share the coder's slot by default (that is
+ * the legacy behavior), `architect` shares the planner's.
+ */
+export function crewSlotFor(role: string): CrewSlot {
   const normalized = role.trim().toLowerCase()
   if (normalized === 'architect' || normalized === 'planner') return 'planner'
   if (normalized === 'vision') return 'vision'
@@ -65,11 +133,24 @@ export function isCrewPoolConfigured(
   ].some(name => (env[name] ?? '').trim().length > 0)
 }
 
-/** Model id for a pipeline role, env-overridable per slot (pure). */
+/**
+ * The model for a seat, with the legacy slot fallback (pure).
+ *
+ * The chain is: this seat's own model, then the slot's model, then the
+ * trio default. So a profile that only sets the three old slots behaves
+ * EXACTLY as it did (the tester and the reviewer still run on the coder's
+ * model), while a crew that staffs a reviewer gets its own model.
+ */
 export function resolveCrewModel(
   role: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
+  const seat = normalizeCrewRole(role)
+  const own = seat
+    ? (env[crewRoleEnvName(seat)] ?? '').trim()
+    : ''
+  if (own.length > 0) return own
+
   const slot = crewSlotFor(role)
   if (slot === 'planner') {
     return (env.FACTORY_CREW_PLANNER_MODEL ?? '').trim() || TRIO_PLANNER_MODEL
@@ -90,12 +171,17 @@ export function seatModelPin(
   role: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
+  const seat = normalizeCrewRole(role)
   const slot = crewSlotFor(role)
-  const name =
+  const slotModelName =
     slot === 'planner' ? 'FACTORY_CREW_PLANNER_MODEL'
       : slot === 'vision' ? 'FACTORY_CREW_VISION_MODEL'
         : 'FACTORY_CREW_CODER_MODEL'
-  const value = (env[name] ?? '').trim()
+
+  // The seat's own model wins; the slot's model is the legacy fallback.
+  const value = seat
+    ? (env[crewRoleEnvName(seat)] ?? '').trim() || (env[slotModelName] ?? '').trim()
+    : (env[slotModelName] ?? '').trim()
   if (value.length === 0) return undefined
   // An already-pinned id is authoritative.
   if (splitProviderPin(value)) return value
@@ -106,11 +192,13 @@ export function seatModelPin(
   // profile, which is the 2026-11-05 `no credential for provider route
   // "local"` failure. A bare id with no local endpoint stays legacy (the
   // route provider owns it), so hosted-only profiles are unchanged.
-  const baseName =
+  const slotBaseName =
     slot === 'planner' ? 'FACTORY_CREW_PLANNER_BASE_URL'
       : slot === 'vision' ? 'FACTORY_CREW_VISION_BASE_URL'
         : 'FACTORY_CREW_CODER_BASE_URL'
-  const seatBase = (env[baseName] ?? '').trim()
+  const seatBase = seat
+    ? (env[crewRoleBaseEnvName(seat)] ?? '').trim() || (env[slotBaseName] ?? '').trim()
+    : (env[slotBaseName] ?? '').trim()
   const routeIsLocal = (env.FACTORY_LLM_PROVIDER ?? '').trim().toLowerCase() === 'local'
   const localBase = seatBase || (routeIsLocal ? (env.LOCAL_LLM_BASE_URL ?? '').trim() : '')
   return localBase ? `local/${value}` : value
@@ -177,18 +265,36 @@ export function crewBaseURLForModel(
 }
 
 /**
- * Thinking-strip (pure): removes R1 `<think>…</think>` reasoning blocks
- * (including an unclosed trailing block from a cutoff stream) plus any
- * stray think tags. Text without think markup passes through untouched.
+ * Thinking-strip (pure): removes reasoning blocks the model leaked into its
+ * answer - R1's `<think>…</think>` (including an unclosed trailing block from
+ * a cutoff stream), plus the other spellings the small reasoning models use.
+ *
+ * The list grew in 2026-11-05 because the strip was too narrow: it only knew
+ * `<think>`, so a `<thinking>` block, a Qwen `<|thinking|>` block, or a stray
+ * `</think>` in the middle of a paragraph all survived - and a surviving
+ * scratchpad is a surviving broken JSON verdict.
  */
 export function stripThinking(text: string): string {
-  return (
-    text
-      // Closed blocks first.
-      .replace(/<think>[\s\S]*?<\/think>/gi, '')
-      // An unclosed trailing block (cutoff stream) runs to the end.
-      .replace(/<think>[\s\S]*$/gi, '')
-      // Stray tags of either kind.
-      .replace(/<\/?think>/gi, '')
-  ).trim()
+  const blocks = [
+    /<think>[\s\S]*?<\/think>/gi,
+    /<thinking>[\s\S]*?<\/thinking>/gi,
+    /<thought>[\s\S]*?<\/thought>/gi,
+    /<reasoning>[\s\S]*?<\/reasoning>/gi,
+    /<\|thinking\|>[\s\S]*?<\/\|thinking\|>/gi,
+    /<\|\/thinking\|>[\s\S]*?<\/\|thinking\|>/gi,
+  ]
+  const openers = [
+    /<think>[\s\S]*$/gi,
+    /<thinking>[\s\S]*$/gi,
+    /<thought>[\s\S]*$/gi,
+    /<reasoning>[\s\S]*$/gi,
+    /<\|thinking\|>[\s\S]*$/gi,
+  ]
+  const tags =
+    /<\/?(?:think|thinking|thought|reasoning|\|thinking\||\/thinking\|)>/gi
+
+  let out = text
+  for (const block of blocks) out = out.replace(block, '')
+  for (const opener of openers) out = out.replace(opener, '')
+  return out.replace(tags, '').trim()
 }

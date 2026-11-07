@@ -20,12 +20,25 @@ function response(status: number, body: string): Response {
 }
 
 async function main(): Promise<void> {
-  // 1. Status gate: 429 + transient gateways retry, 400/401/404/500 do not.
+  // 1. Status gate: the TRANSIENT failures retry; the CLIENT failures do not.
+  //
+  //    408 (request timeout), 429 (rate limited), 500, 502, 503, 504 and
+  //    529 (overloaded) are all things a small-model endpoint returns when
+  //    it is busy, restarting or briefly broken — and a replay fixes them.
+  //    400, 401 and 404 are the request's fault: a replay sends the same
+  //    wrong request and gets the same wrong answer, so retrying only burns
+  //    the operator's time and tokens.
+  assert.equal(shouldRetryStatus(408), true)
   assert.equal(shouldRetryStatus(429), true)
+  assert.equal(shouldRetryStatus(500), true)
+  assert.equal(shouldRetryStatus(502), true)
   assert.equal(shouldRetryStatus(503), true)
+  assert.equal(shouldRetryStatus(504), true)
+  assert.equal(shouldRetryStatus(529), true)
   assert.equal(shouldRetryStatus(400), false)
   assert.equal(shouldRetryStatus(401), false)
-  assert.equal(shouldRetryStatus(500), false)
+  assert.equal(shouldRetryStatus(404), false)
+  assert.equal(shouldRetryStatus(422), false)
 
   // 2. Backoff math: deterministic exponential, capped.
   assert.equal(computeBackoffMs(0, 1000, 8000), 1000)
@@ -74,6 +87,20 @@ async function main(): Promise<void> {
     const result = await fetchWithRetry(fetchFn, 'https://x.test/v1', {}, { sleep: noSleep })
     assert.equal(result.status, 400)
     assert.equal(calls, 1)
+  }
+
+  // 5b. A transient 500 IS replayed (2026-11-06): a busy small-model box
+  //     answers 500 far more often than a big one, and the old gate threw
+  //     the answer away on the first refusal.
+  {
+    let calls = 0
+    const fetchFn = (async () => {
+      calls += 1
+      return calls < 2 ? response(500, 'busy') : response(200, '{}')
+    }) as unknown as typeof fetch
+    const result = await fetchWithRetry(fetchFn, 'https://x.test/v1', {}, { sleep: noSleep })
+    assert.equal(result.status, 200)
+    assert.equal(calls, 2)
   }
 
   // 6. Persistent 429 returns the final response after maxAttempts.

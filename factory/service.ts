@@ -54,6 +54,7 @@ import {
   ImpeccableAdapter,
   SkillAuthoringAdapter,
   ArchifyAdapter,
+  ProjectMemoryAdapter,
   CompositeSkillSource,
   KnowledgeBuilder,
 } from './knowledge'
@@ -127,6 +128,21 @@ export interface FactoryService {
   events(
     taskId?: string,
   ): Promise<FactoryEvent[]>
+
+  /**
+   * Release the service's handles (2026-11-07).
+   *
+   * The service boots a cordis Context with the DSH skill filesystem, and
+   * that filesystem WATCHES the skill roots: about twenty-three open
+   * watchers the moment the first skill is listed. A long-running harness
+   * does not care - it is meant to stay up - but a ONE-SHOT process (a
+   * benchmark runner, a CLI run, a test) finishes its work and then sits
+   * there forever, because the watchers keep the event loop alive.
+   *
+   * `dispose()` unloads the plugins and closes the watchers, so the process
+   * can exit the moment the work is done. It is safe to call more than once.
+   */
+  dispose(): Promise<void>
 }
 
 export interface LaneBudget {
@@ -328,6 +344,11 @@ export async function createFactoryService():
             new OutputDisciplineAdapter(),
           ),
           new UiVerifyAdapter(),
+          // WHAT THE FACTORY LEARNED ABOUT THIS WORKSPACE (2026-11-05).
+          // Every other adapter is static doctrine - the same card for every
+          // workspace, every run - so the factory forgot everything between
+          // runs. This one carries the facts the last runs established here.
+          new ProjectMemoryAdapter(),
         ),
         new CompositeSkillSource(
           new CompositeSkillSource(
@@ -778,6 +799,21 @@ export async function createFactoryService():
       return eventBus.list(
         taskId,
       )
+    },
+
+    async dispose(): Promise<void> {
+      // The cordis Context owns the DSH skill filesystem, and that
+      // filesystem holds open watchers on every skill root it discovers.
+      // Disposing the fiber unloads the plugin and closes them, so a
+      // one-shot process can exit when its work is done.
+      //
+      // Safe to call twice: the fiber's dispose is idempotent, and a
+      // failure here must never fail the run that already happened.
+      try {
+        await ctx.fiber.dispose()
+      } catch {
+        // A leaked handle is better than a failed run.
+      }
     },
   }
 

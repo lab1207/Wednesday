@@ -10,10 +10,18 @@
 import { parseModelPool } from '../model-router/model-capabilities'
 import { parseModelRegistry, resolveActiveModel } from '../model-router/model-switch'
 import { parseModelWeights, weightFor } from '../model-router/model-weights'
-import { resolveCrewModel } from '../model-router/crew-routing'
+import { CREW_ROLES } from '../model-router/crew-routing'
+import { crewRoutingSeatCount, crewSeatModel } from './crew-store'
 import { resolveChatRoute, seatFitsRoute } from '../model-router/chat-stream'
 import { getRelaySnapshot } from '../orchestrator/relay-status'
 import type { RelaySnapshot } from '../orchestrator/relay-status'
+import {
+  estimateSeatCostUsd,
+  formatDurationMs,
+  formatTokenCount,
+  seatUsageByCost,
+  seatUsageSnapshot,
+} from '../model-router/usage'
 
 function keyState(env: NodeJS.ProcessEnv, name: string): string {
   return (env[name] ?? '').trim() ? 'set' : 'unset'
@@ -73,20 +81,27 @@ export function statusModelPaths(
     if (seat && !fits) chat += ` (seat ${seat} does not fit the ${resolved.route.name} route)`
   }
   // The build seats resolve EXACTLY as the pipeline resolves them: the team's
-  // seat by position, else the env slot, else the built-in default. A status
-  // page that named anything else would be a second opinion about the routing.
-  const roles = ['planner', 'coder', 'vision']
-  const seats = roles.map((role, index) => ({
+  // seat BY ROLE NAME, else the env slot, else the built-in default. A
+  // status page that named anything else would be a second opinion about the
+  // routing.
+  //
+  // This used to map the crew's seats BY POSITION onto planner/coder/vision,
+  // so a crew whose seats were [vision, coder, planner] displayed as the
+  // reverse - and a six-seat crew displayed only three of them (2026-11-05).
+  // Now every real seat is named, and the seat that answers a CHAT turn is
+  // the first one that fits the route.
+  const seats = CREW_ROLES.map(role => ({
     role,
-    model: crew?.seats[index]?.model?.trim() || resolveCrewModel(role, env),
+    model: crewSeatModel(crew, role, env),
   }))
   const models = [...new Set(seats.map(s => s.model).filter(Boolean))]
   const slots = seats.map(s => `${s.role}=${s.model}`).join(' ')
   // A team is named, so the operator can see WHICH team the build speaks for.
-  // Only the three routing slots are listed: a team's extra seats are display
-  // seats and never answer a pipeline stage (see `crewSeatSummary`).
+  // The seats that actually ROUTE are listed - a seat named 'worker-4' has
+  // no pipeline role and never answers a stage (see `crewSeatSummary`).
   if (crew) {
-    const label = models.length === 1 ? `${models[0]} (3 slots)` : slots
+    const routed = crewRoutingSeatCount(crew)
+    const label = models.length === 1 ? `${models[0]} (${routed} seat${routed === 1 ? '' : 's'})` : slots
     return { chat, build: `${crew.name} · ${label}` }
   }
   const label = models.length === 1 ? `${models[0]} (all roles)` : slots
@@ -161,6 +176,29 @@ export function renderStatus(
     )
   }
   if (ctx.tokens !== undefined) lines.push(`Tokens: ${ctx.tokens.toLocaleString('en-US')}`)
+  // THE COST OF THE TEAM (2026-11-05).
+  //
+  // The status page said how many tokens the session spent, but not WHO
+  // spent them - and with one model wearing three name tags (the tester and
+  // the reviewer ran on the coder's model) the model rows could not even
+  // tell the operator that the same model had done three different jobs.
+  //
+  // The seat rows are the honest answer: one line per teammate, with the
+  // wall-clock time, because for a locally hosted small model the real cost
+  // is GPU-minutes and a token meter cannot see it.
+  const seats = seatUsageByCost(seatUsageSnapshot())
+  if (seats.length > 0) {
+    lines.push('')
+    lines.push('Cost:')
+    for (const seat of seats) {
+      const tokens = seat.promptTokens + seat.completionTokens
+      const cost = estimateSeatCostUsd(seat)
+      const costText = cost === null ? 'unpriced' : `$${cost.toFixed(4)}`
+      lines.push(
+        `  ${seat.seat}: ${seat.model} · ${formatTokenCount(tokens)} tokens · ${formatDurationMs(seat.elapsedMs)} · ${costText}`,
+      )
+    }
+  }
   if (ctx.busy !== undefined) lines.push(`Agent Running: ${ctx.busy ? 'Yes' : 'No'}`)
   return lines.join('\n')
 }

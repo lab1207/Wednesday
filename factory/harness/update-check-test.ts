@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { channelOf, checkForUpdates, compareVersions, resolveUpdate } from './update-check.js'
+import {
+  channelOf,
+  checkForUpdates,
+  checkUpdate,
+  compareVersions,
+  detectLocalInstall,
+  resolveUpdate,
+  updateStatusLines,
+} from './update-check.js'
 
 async function stubRegistry(tags: Record<string, string>, status = 200): Promise<{ url: string; close: () => void; hits: () => number }> {
   let hits = 0
@@ -150,9 +158,95 @@ async function main(): Promise<void> {
     await rm(directory3, { recursive: true, force: true })
   }
 
-  console.log('UPDATE CHECK TEST: PASS (semver, channels, cache, force bypass, silent failures)')
-}
+  // ---- 2026-11-07: the check says what it ACTUALLY learned --------------
+  //
+  // Operator report: "the /update command does not work". The old check
+  // answered one bit and the command turned every other outcome into
+  // "up to date" -- including a FAILED check and a local build that is
+  // AHEAD of the published release. A failed check must never say
+  // "up to date".
+  const honestDir = await mkdtemp(join(tmpdir(), 'update-check-honest-'))
+  try {
+    const newer = await stubRegistry({ beta: '0.2.0-beta.9' })
+    try {
+      const status = await checkUpdate({ version: '0.2.0-beta.4', registryUrl: newer.url, stateDir: join(honestDir, 'a'), force: true })
+      assert.equal(status.kind, 'available')
+      assert.equal(status.kind === 'available' ? status.remote : '', '0.2.0-beta.9')
+    } finally {
+      newer.close()
+    }
 
+    const same = await stubRegistry({ beta: '0.2.0-beta.4' })
+    try {
+      const status = await checkUpdate({ version: '0.2.0-beta.4', registryUrl: same.url, stateDir: join(honestDir, 'b'), force: true })
+      assert.equal(status.kind, 'current', 'the same version is current, not available')
+    } finally {
+      same.close()
+    }
+
+    // A developer link (or an unpublished build) is AHEAD of npm.
+    const ahead = await stubRegistry({ beta: '0.2.0-beta.3' })
+    try {
+      const status = await checkUpdate({ version: '0.2.0-beta.4', registryUrl: ahead.url, stateDir: join(honestDir, 'c'), force: true })
+      assert.equal(status.kind, 'ahead', 'a local build newer than npm is not "up to date"')
+    } finally {
+      ahead.close()
+    }
+
+    // A FAILED check is a failure, and says so.
+    const dead = await stubRegistry({}, 500)
+    try {
+      const status = await checkUpdate({ version: '0.2.0-beta.4', registryUrl: dead.url, stateDir: join(honestDir, 'd'), force: true })
+      assert.equal(status.kind, 'failed')
+      const lines = updateStatusLines(status).join('\n')
+      assert.ok(!/up to date/i.test(lines), 'a failed check must never say "up to date"')
+      assert.match(lines, /FAILED/, 'a failed check says it failed')
+    } finally {
+      dead.close()
+    }
+
+    // The words for each outcome.
+    const aheadLines = updateStatusLines({
+      kind: 'ahead', current: '0.2.0-beta.4', remote: '0.2.0-beta.3', channel: 'beta',
+    }).join('\n')
+    assert.match(aheadLines, /AHEAD/, 'an ahead build is named as ahead')
+    const availableLines = updateStatusLines({
+      kind: 'available', current: '0.2.0-beta.3', remote: '0.2.0-beta.4', channel: 'beta',
+    }).join('\n')
+    assert.match(availableLines, /npm i -g @lab1207\/wednesday@0\.2\.0-beta\.4/, 'the install command pins the exact version')
+    const linkedLines = updateStatusLines(
+      { kind: 'current', current: '0.2.0-beta.4', remote: '0.2.0-beta.4', channel: 'beta' },
+      { kind: 'linked', target: 'C:\\wednesday' },
+    ).join('\n')
+    assert.match(linkedLines, /LINK/, 'a linked install is named as a link')
+  } finally {
+    await rm(honestDir, { recursive: true, force: true })
+  }
+
+  // A LINKED install (the operator's global install is a junction to the
+  // working tree) is detected, so /update can explain itself.
+  const linkDir = await mkdtemp(join(tmpdir(), 'update-check-link-'))
+  try {
+    const target = join(linkDir, 'target')
+    await mkdir(target, { recursive: true })
+    await writeFile(join(target, 'package.json'), '{"name":"@lab1207/wednesday"}', 'utf8')
+    const link = join(linkDir, 'linked')
+    await symlink(target, link, 'junction')
+    const install = detectLocalInstall(join(link, 'bin', 'wednesday.js'))
+    assert.equal(install.kind, 'linked', 'a junction install is a link')
+    assert.ok(install.target, 'the link names its target')
+    const plain = detectLocalInstall(join(target, 'bin', 'wednesday.js'))
+    assert.equal(plain.kind, 'published', 'a real directory is a published install')
+  } catch (error) {
+    // A host that refuses junctions (no developer mode) must not fail the
+    // suite: the detection is a nicety, the honest statuses are not.
+    assert.ok(error instanceof Error)
+  } finally {
+    await rm(linkDir, { recursive: true, force: true })
+  }
+
+  console.log('UPDATE CHECK TEST: PASS (semver, channels, cache, force bypass, honest statuses, link detection)')
+}
 void main().catch(error => {
   console.error(error)
   process.exitCode = 1

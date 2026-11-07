@@ -1,10 +1,12 @@
 import type {
   CompletionHooks,
+  CompletionOptions,
   ModelProvider,
   ModelRequirements,
 } from '../types'
 
 import {
+  recordSeatUsage,
   recordUsage,
 } from '../usage'
 
@@ -15,6 +17,9 @@ import {
   throttleShared,
 } from '../retry'
 
+import { buildChatBody } from './request-body'
+import { consumeChatStream } from './sse'
+import { stripThinking } from '../crew-routing'
 import { describeBody } from './failure'
 
 /**
@@ -57,25 +62,6 @@ export function resolveNvidiaBaseURL(
   return (configured || NVIDIA_DEFAULT_BASE_URL).replace(/\/+$/, '')
 }
 
-interface NvidiaChoice {
-  message?: {
-    content?: unknown
-    reasoning?: unknown
-    reasoning_content?: unknown
-  }
-  text?: unknown
-}
-
-interface NvidiaResponse {
-  choices?: NvidiaChoice[]
-  output_text?: unknown
-  output?: unknown
-  usage?: {
-    prompt_tokens?: number
-    completion_tokens?: number
-  }
-}
-
 export class NvidiaProvider implements ModelProvider {
   readonly name = 'nvidia'
 
@@ -105,8 +91,9 @@ export class NvidiaProvider implements ModelProvider {
   async complete(
     model: string,
     prompt: string,
-    _images?: string[],
+    images?: string[],
     hooks?: CompletionHooks,
+    options?: CompletionOptions,
   ): Promise<string> {
     const apiKey = resolveNvidiaKey()
 
@@ -122,6 +109,22 @@ export class NvidiaProvider implements ModelProvider {
     await throttleShared(resolveThrottleMs())
 
     const retry = resolveRetryConfig()
+    const startedAt = Date.now()
+    const cleanModel = model.trim() || resolveNvidiaModel()
+
+    // The route STREAMS now (2026-11-05) - it used to buffer the whole body,
+    // so the operator watched a silent spinner and lost every token when a
+    // socket dropped. It also stopped DROPPING IMAGES: `_images` was
+    // ignored and the prompt was sent as plain text, so a vision seat on
+    // NVIDIA was a text seat in disguise.
+    const requestBody = buildChatBody({
+      model: cleanModel,
+      prompt,
+      images,
+      options,
+      provider: this.name,
+    })
+    requestBody.stream = true
 
     const response = await fetchWithRetry(
       fetch,
@@ -132,123 +135,64 @@ export class NvidiaProvider implements ModelProvider {
           'content-type': 'application/json',
           authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model: model.trim() || resolveNvidiaModel(),
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-        }),
+        body: JSON.stringify(requestBody),
       },
       retry,
     )
 
-    const rawBody = await response.text()
+    const elapsedMs = Date.now() - startedAt
 
     if (!response.ok) {
+      const rawBody = await response.text()
       throw new Error(
         `NVIDIA request failed: ${response.status} — ${describeBody(rawBody)}`,
       )
     }
 
-    let data: NvidiaResponse
+    const streamed = await consumeChatStream(response, hooks)
 
-    try {
-      data = JSON.parse(
-        rawBody,
-      ) as NvidiaResponse
-    } catch {
-      throw new Error(
-        `NVIDIA returned invalid JSON: ${describeBody(rawBody)}`,
-      )
-    }
-
-    if (data.usage !== undefined) {
+    if (streamed.promptTokens > 0 || streamed.completionTokens > 0) {
       recordUsage(
         this.name,
-        model,
-        data.usage.prompt_tokens ?? 0,
-        data.usage.completion_tokens ?? 0,
+        cleanModel,
+        streamed.promptTokens,
+        streamed.completionTokens,
+        elapsedMs,
       )
     }
+    recordSeatUsage(
+      options?.seat ?? '',
+      this.name,
+      cleanModel,
+      streamed.promptTokens,
+      streamed.completionTokens,
+      elapsedMs,
+    )
 
-    const choice =
-      data.choices?.[0]
+    const text = stripThinking(streamed.content.trim())
 
-    const content =
-      choice?.message?.content
-
-    if (typeof content === 'string' &&
-        content.trim()) {
-      return content
+    if (text) {
+      return text
     }
 
-    if (Array.isArray(content)) {
-      const text = content
-        .map(part => {
-          if (
-            typeof part === 'object' &&
-            part !== null &&
-            'text' in part
-          ) {
-            return String(
-              (part as { text?: unknown }).text ??
-              '',
-            )
-          }
+    const raw = streamed.raw as {
+      output_text?: unknown
+      output?: unknown
+    } | undefined
+    const outputText = typeof raw?.output_text === 'string' ? raw.output_text.trim() : ''
+    if (outputText) return outputText
+    const output = typeof raw?.output === 'string' ? raw.output.trim() : ''
+    if (output) return output
 
-          return ''
-        })
-        .join('')
-        .trim()
-
-      if (text) {
-        return text
-      }
-    }
-
-    const reasoning =
-      choice?.message?.reasoning
-
-    if (
-      typeof reasoning === 'string' &&
-      reasoning.trim()
-    ) {
-      // This route does not stream, so the reasoning arrives whole — but it is
-      // still the model's own reasoning, and the operator asked to see it.
-      hooks?.onReasoning?.(reasoning)
-      return reasoning
-    }
-
-    const reasoningContent =
-      choice?.message?.reasoning_content
-
-    if (
-      typeof reasoningContent === 'string' &&
-      reasoningContent.trim()
-    ) {
-      hooks?.onReasoning?.(reasoningContent)
-      return reasoningContent
-    }
-
-    if (
-      typeof data.output_text === 'string' &&
-      data.output_text.trim()
-    ) {
-      return data.output_text
-    }
-
-    if (
-      typeof data.output === 'string' &&
-      data.output.trim()
-    ) {
-      return data.output
+    if (streamed.reasoning.trim()) {
+      throw new Error(
+        'NVIDIA produced only reasoning and no answer',
+      )
     }
 
     throw new Error(
-      `NVIDIA returned no usable assistant content: ${describeBody(rawBody)}`,
+      'NVIDIA returned no usable assistant content',
     )
   }
 }
+

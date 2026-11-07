@@ -51,7 +51,10 @@ async function main(): Promise<void> {
       },
     )
     assert.match(withCrew, /Chat: nvidia\/google\/gemma-3-4b-it/, 'chat speaks to the team\'s first seat')
-    assert.match(withCrew, /Build: junun · nvidia\/google\/gemma-3-4b-it \(3 slots\)/, 'build names the team and the seats the pipeline uses')
+    // 2026-11-05: the count is SEATS that route, and the word is "seats"
+    // not "slots" - a crew of three that fills planner/coder/vision runs
+    // three pipeline seats, and the page says so honestly.
+    assert.match(withCrew, /Build: junun · nvidia\/google\/gemma-3-4b-it \(3 seats\)/, 'build names the team and the seats the pipeline uses')
     // A team that does not fill every seat: the empty seat falls back to the
     // env/default, and the page says WHICH model that is.
     const partial = renderStatus(
@@ -66,7 +69,15 @@ async function main(): Promise<void> {
         ],
       },
     )
-    assert.match(partial, /Build: pair · planner=seat-a coder=seat-a vision=Qwen2\.5-VL-7B-Instruct/, 'an unfilled seat names its real fallback')
+    // 2026-11-05: the build line names EVERY real pipeline seat, not just
+    // three. The operator's complaint was "the team had six seats and the
+    // status page named three" - so the page now names all six, and an
+    // unfilled seat says which real fallback it got.
+    assert.match(
+      partial,
+      /Build: pair · architect=seat-a planner=seat-a coder=seat-a tester=seat-a reviewer=seat-a vision=Qwen2\.5-VL-7B-Instruct/,
+      'an unfilled seat names its real fallback, and every seat is named',
+    )
     // No team: the env seats answer the build, and the route model answers
     // the chat.
     const envSeats = renderStatus({
@@ -77,13 +88,13 @@ async function main(): Promise<void> {
       FACTORY_CREW_VISION_MODEL: 'seat-a',
     } as NodeJS.ProcessEnv)
     assert.match(envSeats, /Chat: route-model/, 'without a team the route model answers the chat')
-    assert.match(envSeats, /Build: planner=seat-a coder=seat-b vision=seat-a/, 'and the env seats answer the build')
+    assert.match(envSeats, /Build: architect=seat-a planner=seat-a coder=seat-b tester=seat-b reviewer=seat-b vision=seat-a/, 'and the env seats answer the build')
     // No team and no env seats: the built-in defaults are named, not a blank.
     const bare = renderStatus({
       DSH_LLM_MODEL: 'route-model',
       OPENROUTER_API_KEY: 'fake-openrouter-key',
     } as NodeJS.ProcessEnv)
-    assert.match(bare, /Build: planner=DeepSeek-R1-Distill-Qwen-7B/, 'with nothing set the page names the real defaults')
+    assert.match(bare, /Build: architect=DeepSeek-R1-Distill-Qwen-7B planner=DeepSeek-R1-Distill-Qwen-7B/, 'with nothing set the page names the real defaults')
   }
 
   // 1c. The chat row is TRUTHFUL: it resolves the seat the way the chat turn

@@ -24,6 +24,11 @@ import { join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { HOST, STATE_HOME } from '../paths'
 import { workerProvider } from '../dsh-worker/provider-route'
+import {
+  KILL_GRACE_MS,
+  groupSpawnOptions,
+  killProcessTree,
+} from '../dsh-worker/process-tree'
 import type { ViewLine } from './views'
 
 const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli')
@@ -70,7 +75,9 @@ export interface ProofResult {
 export interface ProofChild {
   stdout: Readable
   stderr: Readable
+  pid?: number | undefined
   once(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
+  once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
   once(event: 'error', listener: (error: Error) => void): this
   kill(signal?: NodeJS.Signals | number): boolean
 }
@@ -83,6 +90,7 @@ export type ProofSpawn = (
     env: NodeJS.ProcessEnv
     stdio: ['ignore', 'pipe', 'pipe']
     windowsHide?: boolean
+    detached?: boolean
   },
 ) => ProofChild
 
@@ -230,6 +238,7 @@ export async function runProof(ui: ProofUi, opts: ProofOptions = {}): Promise<Pr
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      ...groupSpawnOptions(),
     })
   } catch (error) {
     return fail(`could not start the worker: ${error instanceof Error ? error.message : String(error)}`)
@@ -269,26 +278,63 @@ export async function runProof(ui: ProofUi, opts: ProofOptions = {}): Promise<Pr
   })
 
   let timedOut = false
+  let settled = false
+  let settleNow: (value: { code: number | null; error?: Error }) => void = () => {}
+  let hardTimer: NodeJS.Timeout | undefined
+  let graceTimer: NodeJS.Timeout | undefined
+  const clearPending = (): void => {
+    if (hardTimer) clearTimeout(hardTimer)
+    if (graceTimer) clearTimeout(graceTimer)
+  }
   const timer = setTimeout(() => {
     timedOut = true
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      // Already gone.
-    }
+    // THE WHOLE TREE, NOT JUST THE HOST (2026-11-07).
+    //
+    // The host spawns the DSH worker as a child, and the worker inherits the
+    // host's stderr. Killing the host alone left the worker running and
+    // holding the pipe, so `close` never fired and the proof — and the whole
+    // app with it — hung forever (operator report: "/proof hangs all
+    // wednesday"). The tree kill reaches the worker.
+    killProcessTree(child)
+    // The kill is BEST EFFORT. If the tree is already gone, or the OS
+    // refuses the kill, no `exit` event may ever arrive -- and a receipt
+    // that waits for one IS the freeze the operator reported. So the
+    // deadline settles the turn itself, shortly after the kill.
+    //
+    // These timers are NOT unref'd: an unref'd deadline does not keep the
+    // loop alive, so in a quiet process the promise would never settle and
+    // Node would exit mid-await instead of returning the receipt.
+    hardTimer = setTimeout(() => {
+      settleNow({ code: null })
+    }, KILL_GRACE_MS)
   }, timeoutMs)
 
+  // The receipt MUST arrive, whatever the process tree does.
+  //
+  // `close` waits for the PIPES, and the pipes belong to the tree: a worker
+  // that outlived its host keeps them open forever. So the process exit
+  // settles the receipt too, after a short grace that lets the last line
+  // land. The proof is a diagnostic — a receipt that says "the route did
+  // not answer" is worth far more than a frozen app.
   const exit = await new Promise<{ code: number | null; error?: Error }>(resolve => {
-    let settled = false
-    child.once('error', error => {
+    const settle = (value: { code: number | null; error?: Error }): void => {
       if (settled) return
       settled = true
-      resolve({ code: null, error })
+      clearPending()
+      resolve(value)
+    }
+    settleNow = settle
+    child.once('error', error => {
+      settle({ code: null, error })
     })
     child.once('close', code => {
+      settle({ code })
+    })
+    child.once('exit', code => {
       if (settled) return
-      settled = true
-      resolve({ code })
+      graceTimer = setTimeout(() => {
+        settle({ code })
+      }, KILL_GRACE_MS)
     })
   })
   clearTimeout(timer)

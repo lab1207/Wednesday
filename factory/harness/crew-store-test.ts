@@ -114,6 +114,28 @@ test('applyCrew sets env', () => {
   assert.equal(process.env.FACTORY_CREW_VISION_MODEL, '', 'unfilled vision slot clears on switch')
 })
 
+test('a policy can be SET and CLEARED (2026-11-06)', () => {
+  // `/team reset` writes `policy: undefined`. The old `updateCrew` checked
+  // `patch.policy !== undefined`, which cannot tell "not mentioned" from
+  // "explicitly cleared" - so the reset wrote the same policy straight back
+  // and the team kept working the way the operator had just cleared.
+  const crew = addCrew('policy-test', [{ role: 'planner', model: 'm-plan' }])
+  const set = updateCrew(crew.id, { policy: { shape: 'duel', budgetTokens: 1000 } })
+  assert.equal(set?.policy?.shape, 'duel')
+  assert.equal(loadCrews().crews.find(c => c.id === crew.id)?.policy?.budgetTokens, 1000)
+
+  const cleared = updateCrew(crew.id, { policy: undefined })
+  assert.equal(cleared?.policy, undefined, 'the policy is gone')
+  const reread = loadCrews().crews.find(c => c.id === crew.id)
+  assert.equal(reread?.policy, undefined, 'and it stays gone on disk')
+
+  // A patch that does not MENTION the policy leaves it alone.
+  updateCrew(crew.id, { policy: { shape: 'vote' } })
+  const renamed = updateCrew(crew.id, { name: 'policy-test-2' })
+  assert.equal(renamed?.name, 'policy-test-2')
+  assert.equal(renamed?.policy?.shape, 'vote', 'an unrelated patch does not clear the policy')
+})
+
 test('cleanup', () => {
   rmSync(tmp, { recursive: true, force: true })
 })

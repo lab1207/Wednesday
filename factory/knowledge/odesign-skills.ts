@@ -31,8 +31,8 @@ interface OdesignSkillDef {
 const DESIGN_BRIEF_CONTENT = [
   'DESIGN BRIEF DOCTRINE (distilled from open-design/design-brief, Apache-2.0):',
   'Vague words ("professional", "clean", "modern") are NOT directions — resolve 8 dimensions BEFORE any pixel: palette / accent / body type / display type / layout / mood / density / constraints.',
-  'Tokens (use these, invent nothing): dark #09090B/#18181B/#FAFAFA, light #FFFFFF/#F8FAFC/#0F172A, navy #0F172A/#1E293B/#F8FAFC; accents coral #F97316, blue #3B82F6, emerald #10B981, sage #84A98C; body Inter 1rem/1.6; display clamp(2rem,5vw,3.5rem); spacing compact 48 / balanced 72 / spacious 96px; breakpoints 640/768/1024/1280.',
-  'Defaults when unstated: light palette, blue accent, Inter, single column, minimal mood, balanced density — and REPORT every default applied so silent assumptions never propagate.',
+  'Tokens (a palette to CHOOSE FROM, not a mandate -- take the ones the request implies, and go beyond them only when the request asks for something new): dark #09090B/#18181B/#FAFAFA, light #FFFFFF/#F8FAFC/#0F172A, navy #0F172A/#1E293B/#F8FAFC; accents coral #F97316, blue #3B82F6, emerald #10B981, sage #84A98C; body Inter 1rem/1.6; display clamp(2rem,5vw,3.5rem); spacing compact 48 / balanced 72 / spacious 96px; breakpoints 640/768/1024/1280.',
+  'When the request does NOT say: resolve each dimension FROM THE SUBJECT -- a bakery, a crypto dashboard and a medical portal do not share a palette, a type voice or a layout -- and REPORT the choice you made. Falling back to the same palette, accent and single column for every request is a FAILED brief, not a safe default (operator report, 2026-11-07: "every website comes out the same").',
   'Rules: at most 2 typefaces; accent max 3 times per viewport; every interactive element gets :focus-visible; all text WCAG AA; closed vocabulary only — an unrecognized value is a clarification question, never a guess.',
 ].join('\n')
 
@@ -43,6 +43,7 @@ const FRONTEND_DESIGN_CONTENT = [
   '3. REAL INTERFACE, not a poster: controls, empty/loading/error states, tables, filters, navigation, responsive behavior. Honest content — label unknown data sample/pending, never invent claims.',
   '4. PRODUCTION CODE: repo framework and conventions first; semantic markup, keyboard access, focus states, contrast; CSS variables for repeated tokens.',
   '5. SELF-REVIEW BEFORE DONE: works at mobile AND desktop widths; text fits containers without overlap; every interactive element has hover/focus/active/disabled states; no AI visual tropes; one memorable quality.',
+  '6. THE REQUEST IS THE SPEC: build the sections, the order and the vocabulary the request names. A request for a price list is not a hero-plus-three-features landing page, and a request for one dense dashboard screen is not a marketing page. Never substitute a standard structure for the one that was asked for (operator report, 2026-11-07: "it never build like the way it should build").',
 ].join('\n')
 
 const LOGIN_FLOW_CONTENT = [

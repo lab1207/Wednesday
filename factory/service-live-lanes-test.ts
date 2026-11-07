@@ -18,6 +18,10 @@ import assert from 'node:assert/strict'
 
 import type { EngineeringTask } from './contracts'
 
+// The service is held here so the exit path can dispose it (see the bottom
+// of this file).
+let activeService: { dispose(): Promise<void> } | undefined
+
 const PROXY_BASE_URL =
   process.env.LOCAL_LLM_BASE_URL ??
   'http://127.0.0.1:18090/v1'
@@ -132,6 +136,7 @@ async function main(): Promise<void> {
 
   const service =
     await createFactoryService()
+  activeService = service
 
   const makeTask = async (
     id: string,
@@ -238,8 +243,18 @@ void main()
       process.exitCode = 1
     },
   )
-  .finally(() => {
-    process.exit(
-      process.exitCode ?? 0,
-    )
+  .finally(async () => {
+    // THE SERVICE MUST BE DISPOSED (2026-11-07).
+    //
+    // The service's skill filesystem watches every skill root it discovers
+    // (about twenty-three open handles). A forced `process.exit()` tears
+    // those handles down mid-close, and libuv asserts on it: the process
+    // died with 0xC0000409 instead of exiting 0, and whether it happened
+    // depended on the machine's mood. Disposing closes the watchers
+    // properly, and the process ends on its own.
+    try {
+      await activeService?.dispose()
+    } catch {
+      // Best effort: the proof has already been printed.
+    }
   })
