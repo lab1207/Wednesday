@@ -63,6 +63,22 @@ export type CrewSlot = 'planner' | 'coder' | 'vision'
  *
  * Now every seat can have its own model, and the legacy mapping is kept as
  * the FALLBACK so an unchanged profile behaves exactly as before.
+ *
+ * THE OPERATOR'S SIX-MODEL ROSTER (2026-11-07). The operator specified the
+ * seats their team runs and the model each one wears:
+ *
+ *   UI/UX DESIGN    -> Qwen2.5-VL-3B      -> the `vision` seat
+ *   ARCHITECTURE    -> Granite 3.1 2B     -> the `architect` seat
+ *   CORE CODING     -> Qwen2.5-Coder-3B   -> the `coder` seat
+ *   AUTOCOMPLETE    -> DeepSeek Coder 1.3B-> the `autocomplete` seat
+ *   BUG HUNTING     -> Llama-3.2-3B       -> the `bug-hunter` seat
+ *   SECURITY AUDIT  -> Granite-2B-Guardian-> the `security-audit` seat
+ *
+ * Three of those seats already existed and needed no new name. The other
+ * three are new, and they are the ones this release adds: AUTOCOMPLETE,
+ * BUG HUNTING and SECURITY AUDIT. The models below are the operator's
+ * defaults; every one of them is overridable with the seat's own env var,
+ * because the operator may run the same seat on a different box.
  */
 export type CrewRole =
   | 'architect'
@@ -71,6 +87,9 @@ export type CrewRole =
   | 'tester'
   | 'reviewer'
   | 'vision'
+  | 'autocomplete'
+  | 'bug-hunter'
+  | 'security-audit'
 
 /** Every seat the factory runs, in pipeline order. */
 export const CREW_ROLES: readonly CrewRole[] = [
@@ -80,16 +99,171 @@ export const CREW_ROLES: readonly CrewRole[] = [
   'tester',
   'reviewer',
   'vision',
+  'autocomplete',
+  'bug-hunter',
+  'security-audit',
 ]
+
+/**
+ * A seat that wears its OWN model by default.
+ *
+ * The three original slots are where a model LIVES (a T4 holds one Q4 model
+ * at a time, so each slot points at a different box). These three seats were
+ * added with the operator's roster, and each names the model the operator
+ * assigned to it.
+ *
+ * The default applies ONLY when the seat has its own endpoint
+ * (`FACTORY_CREW_<SEAT>_BASE_URL`). That is not a technicality: a seat that
+ * shares a box with another seat cannot run a different model on it, and a
+ * default that claimed otherwise would make the status meter report models
+ * the session never routes. Staff the seat -- give it a box, or name the
+ * model explicitly -- and it wears that model.
+ */
+export const CREW_SEAT_DEFAULT_MODELS: Partial<Record<CrewRole, string>> = {
+  autocomplete: 'deepseek-coder-1.3b-base',
+  'bug-hunter': 'Llama-3.2-3B-Instruct',
+  'security-audit': 'granite-guardian-3.1-2b',
+}
+
+/**
+ * The operator's six-model roster, and where each seat's weights come from
+ * (2026-11-08).
+ *
+ * WHY THIS TABLE EXISTS: the seat defaults above name a MODEL, but a model
+ * name is not a download. An operator who has just installed Wednesday is
+ * holding "deepseek-coder-1.3b-base" and has no way to know that means
+ * `TheBloke/deepseek-coder-1.3b-base-GGUF` on Hugging Face, or which
+ * quantisation to pull. So the roster names the source repo for every seat,
+ * and the quantisation rule is CODE, not a note in a chat.
+ *
+ * THE RULE, from the operator: "Quantization is Mandatory: Always download
+ * the Q4_K_M or Q5_K_M GGUF versions of these models. You will get 99% of
+ * the coding performance at half the hardware resource usage."
+ *
+ * READ THE DISTINCTION HONESTLY: this table is the operator's INTENT for all
+ * six seats. Only the three in `CREW_SEAT_DEFAULT_MODELS` actually WEAR that
+ * model by default — and only when the seat is given its own endpoint. The
+ * other three seats (architect, planner, coder, tester, reviewer, vision)
+ * ride the legacy slot mapping, because a T4 box holds ONE Q4 model at a
+ * time and a seat that shares a box cannot run a different model on it.
+ * Serving a different model for a seat means staffing that seat: give it a
+ * box (`FACTORY_CREW_<SEAT>_BASE_URL`), or name the model explicitly
+ * (`FACTORY_CREW_<SEAT>_MODEL`).
+ *
+ * The URLs are the operator's own, recorded verbatim — they are NOT probed,
+ * NOT fetched, NOT validated at runtime. A gate asserts their SHAPE (a
+ * Hugging Face repo) and that they agree with the seat's default model; it
+ * does not pretend they resolve, because Wednesday runs offline and must not
+ * make a network call to do it.
+ */
+export interface SeatGgufSource {
+  /** The human name the operator uses for this seat, for display. */
+  label: string
+  /** The model id the seat resolves to, matching CREW_SEAT_DEFAULT_MODELS. */
+  model: string
+  /** The Hugging Face repository that publishes the GGUF weights. */
+  repo: string
+  /** The quantisation the operator serves, and why it is not optional. */
+  quantisation: string
+}
+
+/** The quantisation rule, stated once and referenced everywhere. */
+export const GGUF_QUANTISATION_RULE = 'Q4_K_M or Q5_K_M'
+
+/** Why the rule is not a preference. */
+export const GGUF_QUANTISATION_NOTE =
+  '99% of the coding performance at half the hardware resource usage (operator, 2026-11-08).'
+
+export const SEAT_GGUF_SOURCES: Readonly<Record<CrewRole, SeatGgufSource>> = {
+  vision: {
+    label: 'UI/UX DESIGN',
+    model: 'qwen2.5-vl-3b',
+    repo: 'https://huggingface.co/unsloth/Qwen2.5-VL-3B-Instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  architect: {
+    label: 'ARCHITECTURE',
+    model: 'granite-3.1-2b',
+    repo: 'https://huggingface.co/bartowski/granite-3.1-2b-instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  coder: {
+    label: 'CORE CODING',
+    model: 'qwen2.5-coder-3b',
+    repo: 'https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  autocomplete: {
+    label: 'AUTOCOMPLETE',
+    model: 'deepseek-coder-1.3b-base',
+    repo: 'https://huggingface.co/TheBloke/deepseek-coder-1.3b-base-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  'bug-hunter': {
+    label: 'BUG HUNTING',
+    model: 'Llama-3.2-3B-Instruct',
+    repo: 'https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  'security-audit': {
+    label: 'SECURITY AUDIT',
+    model: 'granite-guardian-3.1-2b',
+    repo: 'https://huggingface.co/DevQuasar-11/ibm-granite.granite-guardian-3.1-2b-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  planner: {
+    label: 'PLANNER',
+    model: 'granite-3.1-2b',
+    repo: 'https://huggingface.co/bartowski/granite-3.1-2b-instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  tester: {
+    label: 'TESTER',
+    model: 'qwen2.5-coder-3b',
+    repo: 'https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+  reviewer: {
+    label: 'REVIEWER',
+    model: 'qwen2.5-coder-3b',
+    repo: 'https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF',
+    quantisation: GGUF_QUANTISATION_RULE,
+  },
+}
+
+/**
+ * Where a seat's weights come from (pure).
+ *
+ * Every seat has one, so this never returns null for a real seat; the null is
+ * for a caller holding something that is not a seat at all.
+ */
+export function seatGgufSource(role: string): SeatGgufSource | null {
+  const key = role as CrewRole
+  return SEAT_GGUF_SOURCES[key] ?? null
+}
+
+/** `Granite 3.1 2B · q4_k_m · bartowski/granite-3.1-2b-instruct-GGUF` — one line for a receipt. */
+export function seatGgufLine(role: CrewRole): string {
+  const source = seatGgufSource(role)
+  if (!source) return `${role}: no weights named`
+  const repo = source.repo.replace(/^https:\/\/huggingface\.co\//, '')
+  return `${source.label} · ${source.model} · ${source.quantisation} · ${repo}`
+}
 
 /** The env var that holds a seat's model. */
 export function crewRoleEnvName(role: CrewRole): string {
-  return `FACTORY_CREW_${role.toUpperCase()}_MODEL`
+  // A hyphen is legal in a POSIX env name but not typeable in PowerShell
+  // (`$env:FACTORY_CREW_BUG-HUNTER_MODEL` does not parse), so the name is
+  // spelled with underscores: FACTORY_CREW_BUG_HUNTER_MODEL. The seats that
+  // existed before this release have no hyphen, so their names are unchanged.
+  return `FACTORY_CREW_${role.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_MODEL`
 }
 
 /** The env var that holds a seat's endpoint. */
 export function crewRoleBaseEnvName(role: CrewRole): string {
-  return `FACTORY_CREW_${role.toUpperCase()}_BASE_URL`
+  // Underscores for the same reason as the model name: a hyphen is not
+  // typeable in a PowerShell env reference.
+  return `FACTORY_CREW_${role.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_BASE_URL`
 }
 
 /**
@@ -151,6 +325,20 @@ export function resolveCrewModel(
     : ''
   if (own.length > 0) return own
 
+  // A seat added with the operator's roster wears ITS OWN model by default,
+  // but only once it has its own endpoint to run it on. Without this rule
+  // `crewSlotFor` folds it onto the coder and the BUG HUNTING seat silently
+  // runs on the coding model -- the exact "a team of one wearing three name
+  // tags" failure this file exists to stop. With it, an unstaffed seat stays
+  // on the slot, so the status meter keeps telling the truth.
+  const ownBase = seat
+    ? (env[crewRoleBaseEnvName(seat)] ?? '').trim()
+    : ''
+  const dedicated = ownBase
+    ? (CREW_SEAT_DEFAULT_MODELS[seat] ?? '').trim()
+    : ''
+  if (dedicated.length > 0) return dedicated
+
   const slot = crewSlotFor(role)
   if (slot === 'planner') {
     return (env.FACTORY_CREW_PLANNER_MODEL ?? '').trim() || TRIO_PLANNER_MODEL
@@ -178,10 +366,30 @@ export function seatModelPin(
       : slot === 'vision' ? 'FACTORY_CREW_VISION_MODEL'
         : 'FACTORY_CREW_CODER_MODEL'
 
+  const slotBaseName =
+    slot === 'planner' ? 'FACTORY_CREW_PLANNER_BASE_URL'
+      : slot === 'vision' ? 'FACTORY_CREW_VISION_BASE_URL'
+        : 'FACTORY_CREW_CODER_BASE_URL'
+  const ownBase = seat
+    ? (env[crewRoleBaseEnvName(seat)] ?? '').trim()
+    : ''
+  const seatBase = ownBase || (env[slotBaseName] ?? '').trim()
+  const routeIsLocal = (env.FACTORY_LLM_PROVIDER ?? '').trim().toLowerCase() === 'local'
+  const localBase = seatBase || (routeIsLocal ? (env.LOCAL_LLM_BASE_URL ?? '').trim() : '')
+
   // The seat's own model wins; the slot's model is the legacy fallback.
-  const value = seat
-    ? (env[crewRoleEnvName(seat)] ?? '').trim() || (env[slotModelName] ?? '').trim()
-    : (env[slotModelName] ?? '').trim()
+  const own = seat
+    ? (env[crewRoleEnvName(seat)] ?? '').trim()
+    : ''
+  const slotValue = (env[slotModelName] ?? '').trim()
+  // The roster default is a BARE id for a model the operator runs on their own
+  // box, so it applies only when the seat HAS that box. On a hosted route, or
+  // on a box shared with another seat, the seat must be configured with a
+  // real provider id or it stays on the slot.
+  const dedicated = ownBase
+    ? (CREW_SEAT_DEFAULT_MODELS[seat ?? 'coder'] ?? '').trim()
+    : ''
+  const value = own || dedicated || slotValue
   if (value.length === 0) return undefined
   // An already-pinned id is authoritative.
   if (splitProviderPin(value)) return value
@@ -192,15 +400,6 @@ export function seatModelPin(
   // profile, which is the 2026-11-05 `no credential for provider route
   // "local"` failure. A bare id with no local endpoint stays legacy (the
   // route provider owns it), so hosted-only profiles are unchanged.
-  const slotBaseName =
-    slot === 'planner' ? 'FACTORY_CREW_PLANNER_BASE_URL'
-      : slot === 'vision' ? 'FACTORY_CREW_VISION_BASE_URL'
-        : 'FACTORY_CREW_CODER_BASE_URL'
-  const seatBase = seat
-    ? (env[crewRoleBaseEnvName(seat)] ?? '').trim() || (env[slotBaseName] ?? '').trim()
-    : (env[slotBaseName] ?? '').trim()
-  const routeIsLocal = (env.FACTORY_LLM_PROVIDER ?? '').trim().toLowerCase() === 'local'
-  const localBase = seatBase || (routeIsLocal ? (env.LOCAL_LLM_BASE_URL ?? '').trim() : '')
   return localBase ? `local/${value}` : value
 }
 

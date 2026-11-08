@@ -12,6 +12,8 @@ export type AgentRoleId =
   | 'coder'
   | 'tester'
   | 'reviewer'
+  | 'bug-hunter'
+  | 'security-audit'
 
 export interface AgentContext {
   task: EngineeringTask

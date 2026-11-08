@@ -345,6 +345,56 @@ const FAMILY_RULES: FamilyRule[] = [
     },
   },
   {
+    family: 'deepseek-coder',
+    detect: /deepseek-?coder/,
+    tokenizer: 'deepseek',
+    sizes: {
+      '1.3b': {
+        label: 'DeepSeek Coder 1.3B',
+        contextWindow: 16384,
+        maxOutputTokens: 4096,
+        supportsTools: false,
+        supportsReasoning: false,
+        supportsVision: false,
+      },
+      '6.7b': {
+        label: 'DeepSeek Coder 6.7B',
+        contextWindow: 16384,
+        maxOutputTokens: 8192,
+        supportsTools: false,
+        supportsReasoning: false,
+        supportsVision: false,
+      },
+    },
+  },
+  {
+    // The operator's roster (2026-11-07): Granite 3.1 2B maps code across a
+    // 128K context, and Granite 2B Guardian is the SECURITY AUDIT seat's
+    // model. The guardian is a small guard model, so it gets a small output
+    // budget: it returns a checklist verdict, not an essay.
+    family: 'granite',
+    detect: /granite/,
+    tokenizer: 'llama',
+    sizes: {
+      '2b': {
+        label: 'Granite 3.1 2B',
+        contextWindow: 131072,
+        maxOutputTokens: 8192,
+        supportsTools: false,
+        supportsReasoning: false,
+        supportsVision: false,
+      },
+      guardian: {
+        label: 'Granite 2B Guardian',
+        contextWindow: 8192,
+        maxOutputTokens: 2048,
+        supportsTools: false,
+        supportsReasoning: false,
+        supportsVision: false,
+      },
+    },
+  },
+  {
     family: 'hermes-3',
     detect: /hermes-?3/,
     tokenizer: 'llama',

@@ -10,6 +10,14 @@ import {
   ReviewRunner,
 } from './agents/role-runners'
 
+import type {
+  RoleRunner,
+} from './agents/role-runners'
+
+import type {
+  AgentRoleId,
+} from './agents/types'
+
 import {
   createModelRouter,
   RegistryModelRouter,
@@ -20,6 +28,7 @@ import {
 } from './model-router/providers/deterministic'
 
 import { AgentRegistry } from './agents'
+import { ANALYSIS_ROLES } from './agents/roles'
 import { FactoryExecutor } from './executor'
 import { VerificationEngine } from './verification'
 
@@ -394,30 +403,34 @@ export async function createFactoryService():
       router,
     )
 
+  // The ANALYSIS-ONLY seats (2026-11-07) run on the READ-ONLY runner -- the
+  // one that actually calls a model. `AnalysisRunner` is a stub that returns
+  // canned text with no model call, so wiring a seat to it would produce a
+  // report that says nothing.
+  const seatRunners =
+    new Map<
+      AgentRoleId,
+      RoleRunner
+    >(
+      ANALYSIS_ROLES.map(
+        role =>
+          [
+            role,
+            readOnlyRunner,
+          ] as [
+            AgentRoleId,
+            RoleRunner,
+          ],
+      ),
+    )
+
+  seatRunners.set('coder', codingRunner)
+  seatRunners.set('tester', testingRunner)
+  seatRunners.set('reviewer', reviewRunner)
+
   const dispatcher =
     new DefaultRoleRunnerDispatcher(
-      new Map([
-        [
-          'architect',
-          readOnlyRunner,
-        ],
-        [
-          'planner',
-          readOnlyRunner,
-        ],
-        [
-          'coder',
-          codingRunner,
-        ],
-        [
-          'tester',
-          testingRunner,
-        ],
-        [
-          'reviewer',
-          reviewRunner,
-        ],
-      ]),
+      seatRunners,
     )
 
   const orchestrator =
@@ -560,6 +573,14 @@ export async function createFactoryService():
           ? 'completed'
           : 'failed'
 
+      // The changed-file list belongs to the RUN (2026-11-07), not to the last
+      // seat: the reviewer writes no files, so reading it from `finalOutput`
+      // always produced an empty list and the receipt told the operator "no
+      // changed files were reported" while the workspace held the page.
+      const changedFiles =
+        orchestration.filesChanged ??
+        []
+
       return {
         taskId:
           task.id,
@@ -582,8 +603,10 @@ export async function createFactoryService():
             ?.join('\n') ?? '',
 
         filesChanged:
-          orchestration.finalOutput
-            ?.filesChanged ?? [],
+          changedFiles.length > 0
+            ? changedFiles
+            : orchestration.finalOutput
+                ?.filesChanged ?? [],
 
         tests: [],
 

@@ -83,6 +83,58 @@ export function latestSession(): StoredSession | null {
   }
 }
 
+/**
+ * Every saved session, newest first (2026-11-08).
+ *
+ * WHY: `latestSession()` answers "what did I just do", and the operator's
+ * question was "what did I do LAST WEEK". `--resume <id>` already loads any
+ * one of them, but nothing could SEE the list — so the ids existed only for
+ * someone who had already remembered them, which is nobody. `/history` prints
+ * this.
+ *
+ * One unreadable or malformed file is SKIPPED, never fatal: a history command
+ * that dies on one bad file is a history command that cannot be trusted.
+ * Capped so a directory with ten thousand sessions cannot stall a REPL.
+ */
+const MAX_LISTED = 500
+
+export function listSessions(): StoredSession[] {
+  let names: string[] = []
+  try {
+    names = readdirSync(sessionsDir())
+      .filter(name => name.endsWith('.json'))
+      .map(name => ({ name, at: statSync(join(sessionsDir(), name)).mtimeMs }))
+      .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name))
+      .map(entry => entry.name.slice(0, -5))
+      .slice(0, MAX_LISTED)
+  } catch {
+    return []
+  }
+  const out: StoredSession[] = []
+  for (const id of names) {
+    const session = loadSession(id)
+    if (session) out.push(session)
+  }
+  return out
+}
+
+/**
+ * The first operator-shaped row of a session, for the list's subject column.
+ *
+ * HONEST BY CONSTRUCTION: a stored transcript does not mark which rows the
+ * operator typed (MsgTone carries no 'user'), so this returns the first row
+ * that is NOT a framed answer — the closest available approximation — and the
+ * caller says "rows", never "turns", so a reader is never told a count that
+ * means something it does not.
+ */
+export function firstRequestOf(session: StoredSession): string {
+  const first = session.messages.find(message => !message.panel)
+  if (!first) return '(no transcript rows)'
+  const text = first.text.trim()
+  if (!text) return '(blank)'
+  return text.length > 48 ? `${text.slice(0, 48)}…` : text
+}
+
 /** `2m 14s` / `1h 2m 3s` / `14s` — Hermes' exit-card duration grammar. */
 export function formatDuration(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000))

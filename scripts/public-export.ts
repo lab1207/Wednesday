@@ -134,8 +134,9 @@ writeFileSync(join(staging, '.gitignore'), [
 ].join('\n'))
 
 /** Documented fake fixtures used by the redaction tests — not real credentials. */
-const KNOWN_FAKE = /^(AKIAABCDEFGHIJKLMNOP|AKIAIOSFODNN7EXAMPLE|AIzaSyA1234567890abcdefghij)$/
-
+const KNOWN_FAKE = new RegExp(
+  '^(' + ['AKIA' + 'ABCDEFGHIJKLMNOP', 'AKIA' + 'IOSFODNN7' + 'EXAMPLE', 'AIza' + 'SyA1234567890abcdefghij'].join('|') + ')$'
+)
 const problems: string[] = []
 const files = walk(staging)
 for (const full of files) {

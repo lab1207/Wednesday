@@ -10,11 +10,20 @@ import {
   ReviewRunner,
 } from './agents/role-runners'
 
+import type {
+  RoleRunner,
+} from './agents/role-runners'
+
+import type {
+  AgentRoleId,
+} from './agents/types'
+
 import {
   createModelRouter,
 } from './model-router'
 
 import { AgentRegistry } from './agents'
+import { ANALYSIS_ROLES } from './agents/roles'
 import { FactoryExecutor } from './executor'
 import { VerificationEngine } from './verification'
 
@@ -311,31 +320,33 @@ async function runWithContext(
   const reviewRunner =
     new ReviewRunner(router)
 
+  // The ANALYSIS-ONLY seats (2026-11-07) run on the READ-ONLY runner -- the
+  // one that actually calls a model.
+  const seatRunners =
+    new Map<
+      AgentRoleId,
+      RoleRunner
+    >(
+      ANALYSIS_ROLES.map(
+        role =>
+          [
+            role,
+            readOnlyRunner,
+          ] as [
+            AgentRoleId,
+            RoleRunner,
+          ],
+      ),
+    )
+
+  seatRunners.set('coder', codingRunner)
+  seatRunners.set('tester', testingRunner)
+  seatRunners.set('reviewer', reviewRunner)
+
   // Agent dispatcher.
   const dispatcher =
     new DefaultRoleRunnerDispatcher(
-      new Map([
-        [
-          'architect',
-          readOnlyRunner,
-        ],
-        [
-          'planner',
-          readOnlyRunner,
-        ],
-        [
-          'coder',
-          codingRunner,
-        ],
-        [
-          'tester',
-          testingRunner,
-        ],
-        [
-          'reviewer',
-          reviewRunner,
-        ],
-      ]),
+      seatRunners,
     )
 
   const task: EngineeringTask = {

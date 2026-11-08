@@ -45,6 +45,61 @@ export const NONEMPTY_WORKSPACE_CHECK =
   'node -e "const fs=require(\'fs\');process.exit(fs.readdirSync(\'.\').length===0?1:0)"'
 
 /**
+ * Script names that are a GATE, not a feature (2026-11-08).
+ *
+ * WHY: three separate briefs asked for the same thing — "automated
+ * compilation and type checks", "strict linters catch 90% of the small
+ * models' mistakes". The mechanism already exists (`verify` runs whatever
+ * `--test` commands the task declares, and the repair loop feeds a failure
+ * back to the coder), but nothing ARRANGED it: a TypeScript workspace with a
+ * `typecheck` script was answering `npm test` and nothing else, so a missing
+ * brace reached the operator as a passing run.
+ *
+ * A sub-3B model's most common defect is a syntax slip, and the cheapest,
+ * most deterministic reader of a syntax slip is the compiler. Running the
+ * gate the project already declares costs one read of package.json and turns
+ * "the model wrote it" into "the compiler agreed".
+ *
+ * Only scripts the manifest DECLARES are used — never a guessed `npx tsc`,
+ * which would download a toolchain on a machine that has none and turn a
+ * missing dependency into a failed run.
+ */
+const GATE_SCRIPTS: Array<[string, string]> = [
+  ['typecheck', 'npm run typecheck'],
+  ['tsc', 'npm run tsc'],
+  ['lint', 'npm run lint'],
+]
+
+/** The scripts a manifest declares, or {} when there is no readable one. */
+export function packageScripts(workspace: string): Record<string, string> {
+  try {
+    const pkg = JSON.parse(readFileSync(join(workspace, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>
+    }
+    if (pkg.scripts && typeof pkg.scripts === 'object') return pkg.scripts
+  } catch {
+    // No manifest, or unreadable: callers fall back to what they have.
+  }
+  return {}
+}
+
+/**
+ * The gate commands this workspace declares, in declaration order.
+ *
+ * Pure and exported so the claim can be asserted without a model.
+ */
+export function packageGateCommands(workspace: string): string[] {
+  const scripts = packageScripts(workspace)
+  const gates: string[] = []
+  for (const [name, command] of GATE_SCRIPTS) {
+    if (typeof scripts[name] === 'string') {
+      gates.push(command)
+    }
+  }
+  return gates
+}
+
+/**
  * Best-effort defaults from the workspace. Manifests pick their real test
  * command; anything without a manifest gets the non-empty-workspace check,
  * because a guessed `npm test` can never pass where no package.json exists.
@@ -52,8 +107,46 @@ export const NONEMPTY_WORKSPACE_CHECK =
 export function detectDefaults(workspace: string): AutoDefaults {
   const files = safeReadDir(workspace)
   for (const [file, tests] of TEST_COMMANDS) {
-    if (files.includes(file)) {
+    if (!files.includes(file)) continue
+
+    if (file !== 'package.json') {
       return { tests, ...stackFor(file), reason: `${file} found` }
+    }
+
+    // A manifest can declare more than a test: run the gates it declares
+    // too, so a syntax slip is caught by the compiler instead of reaching
+    // the operator. And when the manifest declares NO test script, `npm
+    // test` is a command that cannot pass — the run would be red before it
+    // started, which is the same defect class as a broken gate.
+    const scripts = packageScripts(workspace)
+    const gates = packageGateCommands(workspace)
+
+    if (typeof scripts.test === 'string') {
+      return {
+        tests: ['npm test', ...gates],
+        stack: 'node',
+        role: 'backend',
+        reason:
+          gates.length > 0
+            ? `package.json found (test + ${gates.length} declared gate(s))`
+            : 'package.json found',
+      }
+    }
+
+    if (gates.length > 0) {
+      return {
+        tests: gates,
+        stack: 'node',
+        role: 'backend',
+        reason: `package.json found, no "test" script — the declared gate(s) run instead`,
+      }
+    }
+
+    return {
+      tests: [NONEMPTY_WORKSPACE_CHECK],
+      stack: 'node',
+      role: 'backend',
+      reason: 'package.json found, no "test" script and no declared gate — non-empty workspace check',
     }
   }
   // python-style test dirs without a manifest

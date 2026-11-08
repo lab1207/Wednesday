@@ -16,7 +16,40 @@ import { redactSensitiveText } from './security/redaction'
 
 const HERMES = fileURLToPath(new URL('./hermes/hermes.ts', import.meta.url))
 
-const VERBS = new Set(['create', 'status', 'run', 'watch', 'events', 'result', 'retry', 'cancel', 'list'])
+const VERBS = new Set([
+  'create',
+  'status',
+  'run',
+  'watch',
+  'events',
+  'result',
+  'retry',
+  'cancel',
+  'list',
+  'scan',
+])
+
+/**
+ * `wednesday scan` — the commit-time security gate (2026-11-08, B231).
+ *
+ * A LOCAL verb, NOT forwarded to Hermes: it reads a git index and prints a
+ * report, and the Hermes task store has nothing to do with it. Forwarding
+ * would put repository hygiene behind the task queue, which is the wrong
+ * dependency for a thing that must run before a commit exists.
+ *
+ * The parsing and the report live in `factory/harness/scan-command.ts`, so
+ * this verb and the operator-facing `wednesday scan` (the harness bin, which
+ * is what `npm i -g` actually installs) are the same code.
+ *
+ *   wednesday scan                  scan the repo you are standing in
+ *   wednesday scan --repo DIR       scan another repository
+ *   wednesday scan --allow-findings report, then allow
+ *   wednesday scan --install-hook   install the gate into the target repo
+ */
+async function scan(args: string[]): Promise<void> {
+  const { runScanCommand } = await import('./harness/scan-command')
+  process.exit(runScanCommand(args))
+}
 
 function spawnHermes(verb: string, args: string[], timeoutMs: number) {
   return spawnSync(process.execPath, [...process.execArgv, HERMES, verb, ...args], {
@@ -132,6 +165,11 @@ async function main(): Promise<void> {
 
   if (verb === 'watch') {
     await watch(rest, json)
+    return
+  }
+
+  if (verb === 'scan') {
+    await scan(rest)
     return
   }
 

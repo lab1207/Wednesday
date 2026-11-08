@@ -1,4 +1,6 @@
 import { createClassicAsk } from './classic-ask'
+import { describeChatMoa, resolveChatMoa, runChatMoa } from '../model-router/chat-moa'
+import { runScanCommand } from './scan-command'
 import { connectCli, connectFlow } from './connect'
 import { stdin, stdout } from 'node:process'
 import { spawnSync } from 'node:child_process'
@@ -115,6 +117,7 @@ export const HELP_COMMANDS: Array<[string, string]> = [
   ['/new', 'start a fresh session'],
   ['/q', 'leave the harness'],
   ['/tasks', 'list persisted tasks'],
+  ['/history', 'list saved sessions · read one back'],
   ['/result <id>', 'inspect a stored task + result'],
   ['/events <id>', 'inspect persisted Factory events'],
   ['/run <id>', 'preview + approve a queued run'],
@@ -186,7 +189,7 @@ export const COMMAND_SPECS: CommandSpec[] = HELP_COMMANDS
  */
 export const HELP_GROUPS: HelpGroup[] = [
   { title: 'Composer', names: ['<request>', '/'] },
-  { title: 'Session', names: ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q'] },
+  { title: 'Session', names: ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q', '/history'] },
   { title: 'Setup', names: ['/connect', '/create [name]', '/model', '/agents', '/crew', '/team', '/templates', '/onboard', '/proof'] },
   { title: 'Work', names: ['/tasks', '/result <id>', '/events <id>', '/run <id>', '/review', '/health'] },
   { title: 'System', names: ['/update'] },
@@ -636,6 +639,16 @@ export function endpointFailureHint(diagnostics: string | undefined): string | n
   // question. A missing key is not a tunnel problem.
   if (/no credential|credential for provider|api ?key[^.]{0,40}not set|invalid api key/.test(text)) {
     return 'the provider has no usable credential — run /connect and store the key it names, then retry. Nothing about the task was wrong.'
+  }
+  // A RATE LIMIT is not a tunnel problem (operator run, 2026-11-07). The
+  // provider answered `429: Rate limit exceeded: free-models-per-day` and the
+  // generic `turn failed` rule below claimed "the tunnel cut the stream", so
+  // the operator was told to reconnect a tunnel that was never the issue --
+  // while the real cause (the daily free quota was spent) went unnamed.
+  // It is checked BEFORE every endpoint rule because the 429 body arrives
+  // wrapped in the provider's `turn failed` envelope.
+  if (/\b429\b|rate limit|too many requests|x-ratelimit|quota exceeded|insufficient_quota/i.test(text)) {
+    return 'the provider rate-limited the run (429) — the quota for that model is spent, not the task: wait for the reset the error names, add credits, or route the seat to another model, then retry.'
   }
   if (/(\b530\b|\b502\b|\b503\b|\b504\b|tunnel|econnrefused|econnreset|fetch failed|html page|socket hang up|timed out)/.test(text)) {
     return 'the model endpoint failed mid-run — a tunnel URL changes when its host restarts: run /connect with the current one, then retry.'
@@ -2884,6 +2897,7 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
     // way back only if the file is actually on disk. A save failure is silent
     // by design — the card then says goodbye instead of promising a resume.
     const { saveSession, exitCard } = await import('./session-store')
+    const { listSessions, firstRequestOf } = await import('./session-store')
     const saved = state.messages.length > 0
       ? saveSession({
         id: sessionId,
@@ -3943,6 +3957,98 @@ export async function replLoop(
         await emitBlock(ui, lines.join('\n'), 'Usage')
         continue
       }
+      // /history — go back to any saved session (2026-11-08).
+      //
+      // WHY the operator asked: the terminal is a long conversation, and the
+      // only way back was `wednesday --resume <id>` on the CLI — which means
+      // quitting the TUI to find an id you cannot see from inside it. The
+      // storage already exists (factory/harness/session-store.ts:
+      // sessionsDir/loadSession/latestSession/saveSession) and `--resume`
+      // already restores one; nothing LISTED them. This adds the listing
+      // without adding a second store.
+      //
+      //   /history            list the saved sessions, newest first
+      //   /history 3          read back session #3 from the list
+      //   /history <id>       read back a session by its id
+      //
+      // HONEST LIMIT, and it is a real one: a stored session carries the
+      // RENDERED transcript (ScreenMessage[]), not the chat turns. A
+      // ScreenMessage has no "this was the operator" marker (MsgTone is
+      // plain/dim/green/red/yellow/cyan/bold), so the live chat history
+      // cannot be rebuilt from it — and pretending otherwise would seed the
+      // next request with a conversation that never happened. Reading a
+      // session back is therefore a READ, and continuing it is the command
+      // `wednesday --resume <id>`, which restores the screen state, the
+      // composer label, the side panel and the up-arrow recall for real.
+      if (line === '/history' || line.startsWith('/history ')) {
+        const {
+          listSessions,
+          firstRequestOf,
+          loadSession,
+          formatDuration,
+        } = await import('./session-store')
+        const sessions = listSessions()
+        if (sessions.length === 0) {
+          ui.note(
+            screen
+              ? 'No saved sessions yet — a session is saved when the terminal exits.'
+              : 'No saved sessions on this path. The full-screen terminal saves a session when you leave it; a piped or classic run does not — run `wednesday` for an interactive terminal.',
+          )
+          continue
+        }
+        const want = line.slice('/history'.length).trim()
+        if (!want) {
+          const shown = sessions.slice(0, 12)
+          const rows = shown.map((session, index) => {
+            const when = new Date(session.savedAt).toISOString().slice(0, 16).replace('T', ' ')
+            const turns = session.messages.length
+            const subject = firstRequestOf(session)
+            return `  ${String(index + 1).padStart(2)}  ${session.id.slice(0, 8)}  ${when}  ${String(turns).padStart(3)} rows  ${subject}`
+          })
+          await emitBlock(
+            ui,
+            [
+              '',
+              `  ${sessions.length} saved session${sessions.length === 1 ? '' : 's'} — /history <n> reads one back`,
+              ...rows,
+              sessions.length > shown.length ? `  ... and ${sessions.length - shown.length} older` : '',
+              '',
+            ].join('\n'),
+            'History',
+          )
+          continue
+        }
+
+        const byNumber = /^\d+$/.test(want) ? sessions[Number(want) - 1] : undefined
+        const session = byNumber ?? loadSession(want)
+        if (!session) {
+          ui.note(
+            /^\d+$/.test(want)
+              ? `No session #${want} — /history lists what exists.`
+              : `No saved session "${want}" — /history lists what exists.`,
+          )
+          continue
+        }
+
+        const when = new Date(session.savedAt).toISOString().slice(0, 16).replace('T', ' ')
+        const rows = session.messages.slice(-60).map(message =>
+          `  ${message.text.length > 96 ? `${message.text.slice(0, 96)}…` : message.text}`,
+        )
+        await emitBlock(
+          ui,
+          [
+            '',
+            `  ${session.id}`,
+            `  saved ${when} · ${session.messages.length} rows · ${formatDuration(Math.max(0, session.savedAt - session.startedAt))}`,
+            session.crewLabel ? `  crew: ${session.crewLabel}` : '',
+            ...(rows.length > 0 ? rows : ['  (no transcript rows)']),
+            `  continue this one:  wednesday --resume ${session.id}`,
+            '',
+          ].join('\n'),
+          'Session',
+        )
+        continue
+      }
       if (line === '/display' || line.startsWith('/display ')) {
         // Density is a SETTING with a getter: bare `/display` answers with the
         // current mode, `/display quiet|normal|verbose` changes it. The screen
@@ -4501,6 +4607,49 @@ export async function replLoop(
              // `@reviewer` prefix is how the operator picked a seat, not part
              // of what they asked.
              const userText = chatRequest
+              // Mixture-of-Agents (2026-11-08, B238): when FACTORY_MOA is on,
+              // the turn is fanned out to a TEAM and aggregated once instead of
+              // answered by one model. OFF by default, so an ordinary turn takes
+              // exactly the path it always did - the guard is one `if` and
+              // everything below it is the unchanged answer.
+              const moa = resolveChatMoa()
+              if (moa) {
+                const aggregate = await runChatMoa({
+                  question: userText,
+                  // Every teammate speaks on the CHAT route with its own model
+                  // id. That is the honest constraint: one endpoint can hold
+                  // several models, and a seat can be pointed at its own box
+                  // through the usual per-seat base-URL env vars.
+                  team: moa.team.map(member => ({
+                    seat: member.seat,
+                    route: { ...route, model: member.model },
+                  })),
+                  aggregator: moa.aggregator
+                    ? { ...route, model: moa.aggregator }
+                    : route,
+                  history: chatHistory,
+                })
+                // The receipt is not a footnote: a run that quietly used one
+                // model must not look like a team, and a teammate that failed
+                // must not disappear.
+                ui.note(describeChatMoa(aggregate))
+                if (aggregate.failure) {
+                  lastChatFailure = aggregate.failure
+                  chatFailureStreak += 1
+                  ui.error(aggregate.failure)
+                } else {
+                  lastChatFailure = ''
+                  chatFailureStreak = 0
+                  chatHistory.push(
+                    { role: 'user', content: userText },
+                    { role: 'assistant', content: aggregate.answer },
+                  )
+                }
+                if (lineBuf.trim()) ui.note(lineBuf)
+                lineBuf = ''
+                paintLive()
+                continue
+              }
              // Memory only on a completed turn: a failed or halted exchange is
            // not remembered, so the next turn keeps question/answer order.
            const answer = await chatComplete(
@@ -4631,19 +4780,48 @@ export async function replLoop(
           // operator had even seen the approval card.
           ui.note(`No project file in ${inline.workspace ?? defaults.workspace} — ${verificationLabel(auto.tests)}. Pass --test "command" to be exact.`)
         }
-        // The guess names `npm test` but package.json has no test script: that
-        // run is red before it starts. Say so at approval time, not after.
+        // The test command the task will actually carry. Declared BEFORE the
+        // note below, which reads it — and named for what it is, because
+        // naming it `tests` shadowed the array `makeTask` receives and passed
+        // a FUNCTION where `string[]` was expected (`tests.some is not a
+        // function`, twice, on every request).
+        const resolveTests = (
+          inline: { tests: string[] },
+          defaults: { tests: string[] },
+          policyTests: string[],
+          auto: { tests: string[] } | null,
+        ): string[] =>
+          inline.tests.length > 0
+            ? inline.tests
+            : defaults.tests.length > 0
+              ? [...defaults.tests]
+              : policyTests.length > 0
+                ? policyTests
+                : auto
+                  ? auto.tests
+                  : []
+        const tests = resolveTests(
+          inline,
+          defaults,
+          policyTests,
+          auto,
+        )
+        // `npm test` with no test script in the manifest is a run that is red
+        // before it starts. It used to be guessed, and the note confessed it
+        // at approval time; B232 stops the guess, so the note now covers the
+        // case that is left — an EXPLICIT `--test "npm test"` on a workspace
+        // whose manifest declares no such script. Saying nothing and running
+        // a guaranteed failure is the one outcome this must not have.
         const ws = inline.workspace ?? defaults.workspace
-        if (auto && hasProjectMarker(ws) && auto.tests.some(t => t.includes('npm test')) && !packageHasTestScript(ws)) {
+        if (
+          hasProjectMarker(ws) &&
+          !packageHasTestScript(ws) &&
+          tests.some(t =>
+            /(^|\s|\$)npm test(\s|$)/.test(t),
+          )
+        ) {
           ui.note('Note: package.json has no "test" script — "npm test" will fail. Pass --test "command" to be exact.')
         }
-        const tests = inline.tests.length > 0
-          ? inline.tests
-          : defaults.tests.length > 0
-            ? [...defaults.tests]
-            : policyTests.length > 0
-              ? policyTests
-              : auto ? auto.tests : []
         const requiredFiles = [
           ...defaults.requiredFiles,
           ...inline.requiredFiles,
@@ -4842,6 +5020,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await migrateLegacyState()
     } catch (error) {
       console.error(`startup note: legacy state not migrated (${safeError(error)}); starting fresh.`)
+    }
+    // The commit-time security gate (2026-11-08, B231). It is a COMMAND, not
+    // a request: a scan reads a git index and prints a report, and reading it
+    // as a build request is how the first proof run died with "Unknown
+    // option: --repo" while the operator watched a task preview appear.
+    //
+    // It runs BEFORE the startup health check on purpose: a hook fires on
+    // every commit, and ~1s of health probing per commit is latency the
+    // operator feels every time they save work.
+    if (args[0] === 'scan') {
+      process.exitCode = runScanCommand(args.slice(1))
+      return
     }
     // Startup health: one advisory line + history entry, never blocking.
     // Offline-safe (~1s, no spend, no model calls). Opt out for scripts

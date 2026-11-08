@@ -60,6 +60,10 @@ import {
   buildIdentitySection,
 } from './identity'
 
+import {
+  limitPromptKeepingTail,
+} from './prompt-trim'
+
 import type {
   EccAgent,
 } from './ecc-crew'
@@ -157,9 +161,15 @@ export function buildPlannerGuidance(
     'PLANNER GUIDANCE:',
   ]
 
+  // The planner's answer is UNTRUSTED shape (2026-11-08, B229): the type
+  // says string[] but a small model answers with a bare string as often as
+  // with an array, and `.slice(0, 8).map(...)` on a string throws -- which
+  // kills the CODER's prompt builder with the plan already written. One
+  // normaliser at the seam, so the guidance reads every plan the same way.
   const recommendations =
-    latest.recommendations ??
-    []
+    toStringList(
+      latest.recommendations,
+    )
 
   if (
     recommendations.length >
@@ -179,9 +189,11 @@ export function buildPlannerGuidance(
     )
   }
 
+  // Same untrusted shape as the recommendations (2026-11-08, B229).
   const findings =
-    latest.findings ??
-    []
+    toStringList(
+      latest.findings,
+    )
 
   if (
     findings.length >
@@ -362,26 +374,35 @@ export class CodingRunner
       'PREVIOUS VERIFICATION RESULT:',
     ]
 
+    // The tester's and the coder's answers are UNTRUSTED shape (2026-11-08,
+    // B229): the type says string[] but a small model answers with a bare
+    // string, and `.slice(0, 5).map(...)` on a string throws -- killing the
+    // repair feedback, which is the one thing a repair attempt cannot do
+    // without. The FIRST blocking issue is the reason (2026-11-07), so it
+    // gets the most room; the rest are context.
     const blockingIssues =
-      latestTester?.blockingIssues ??
-      []
+      toStringList(
+        latestTester?.blockingIssues,
+      )
 
     const findings =
-      latestTester?.findings ??
-      []
-
+      toStringList(
+        latestTester?.findings,
+      )
     if (
       blockingIssues.length > 0
     ) {
       lines.push(
         'BLOCKING ISSUES:',
         ...blockingIssues
-          .slice(0, 10)
+          .slice(0, 5)
           .map(
-            item =>
+            (item, index) =>
               `- ${limitText(
                 item,
-                1000,
+                index === 0
+                  ? 1600
+                  : 400,
               )}`,
           ),
       )
@@ -394,12 +415,12 @@ export class CodingRunner
         '',
         'VERIFICATION FINDINGS:',
         ...findings
-          .slice(0, 10)
+          .slice(0, 5)
           .map(
             item =>
               `- ${limitText(
                 item,
-                1000,
+                400,
               )}`,
           ),
       )
@@ -410,8 +431,9 @@ export class CodingRunner
     // terminal blocks with no tester output. Feed the last coder's blocking
     // issues into the next attempt so repairAttempts count real repairs.
     const coderBlocking =
-      latestCoder?.blockingIssues ??
-      []
+      toStringList(
+        latestCoder?.blockingIssues,
+      )
 
     if (
       coderBlocking.length > 0 &&
@@ -421,12 +443,14 @@ export class CodingRunner
         '',
         'PREVIOUS CODER FAILURE:',
         ...coderBlocking
-          .slice(0, 10)
+          .slice(0, 5)
           .map(
-            item =>
+            (item, index) =>
               `- ${limitText(
                 item,
-                1000,
+                index === 0
+                  ? 1600
+                  : 400,
               )}`,
           ),
       )
@@ -459,9 +483,14 @@ export class CodingRunner
       return ''
     }
 
+    // The repair feedback is bounded so it cannot crowd out the rules at the
+    // end of the prompt (2026-11-07). It used to be allowed 7,000 characters
+    // on its own, which on its own could push the STRICT EXECUTION RULES
+    // block out of the prompt entirely -- the operative instructions were
+    // the first thing a long prompt lost.
     return limitText(
       lines.join('\n'),
-      7000,
+      4000,
     )
   }
 
@@ -572,7 +601,14 @@ export class CodingRunner
       ) {
         sections.push(
           '',
-          rulesGuidance,
+          // The ECC rules are context, not instructions the model must
+          // follow to the letter, so they are bounded (2026-11-07). An
+          // unbounded rules section could push the operative rules out of
+          // the prompt.
+          limitText(
+            rulesGuidance,
+            2000,
+          ),
         )
       }
     } catch {
@@ -615,7 +651,10 @@ export class CodingRunner
         ) {
           sections.push(
             '',
-            repairCrewGuidance,
+            limitText(
+              repairCrewGuidance,
+              2000,
+            ),
           )
         }
       } catch {
@@ -640,7 +679,12 @@ export class CodingRunner
       'Perform the task now.',
     )
 
-    return limitText(
+    // The prompt is trimmed with a HEAD+TAIL budget, not a head-only one
+    // (2026-11-07). The tail of this prompt is the STRICT EXECUTION RULES
+    // block and the FINAL REQUIREMENT -- the operative instructions -- and a
+    // head-only trim dropped exactly those on every long prompt, which is
+    // every repair attempt. See prompt-trim.ts.
+    return limitPromptKeepingTail(
       sections.join('\n'),
       12000,
     )

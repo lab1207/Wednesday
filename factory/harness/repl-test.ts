@@ -281,10 +281,14 @@ async function main(): Promise<void> {
 
     // Inline flags are per-request and must reach the task, not the prose. The
     // temp workspace has a package.json with NO test script, so the guess is
-    // `npm test` and the honest warning has to appear before approval.
+    // the non-empty-workspace check and the honest warning still has to fire
+    // for an EXPLICIT `npm test` on that workspace (B232 stopped the guess;
+    // the case that remains is the one the operator typed).
     {
       const inline = session([
         `--test "node -e \\"process.exit(0)\\"" add a regression note`,
+        'n',
+        `--test "npm test" add a real note`,
         'n',
         '--test "node -e \\"process.exit(0)\\""',
         '/exit',
@@ -295,17 +299,22 @@ async function main(): Promise<void> {
   // to be ragged - `Role ` was five wide and `Required files  ` was sixteen, so
   // nothing lined up. This assertion was pinning that inconsistency.
   assert.match(inline.stdout, /Objective\s+add a regression note/, 'and the objective is only the objective')
-      assert.match(inline.stdout, /cancelled by operator/, 'rejecting an inline-flagged task runs nothing')
       assert.match(inline.stderr, /flags alone do not run anything/, 'flags with no objective are refused, not sent as a request')
+      // The warning that used to fire on the GUESS now fires on the EXPLICIT
+      // command: a doomed run is never allowed to look innocent. It is an
+      // approval-time note, so it rides the card (stdout), not stderr.
+      assert.match(inline.stdout, /no "test" script/, 'an explicit npm test with no test script must be named')
     }
 
-    // A bare request in a workspace with no test script: the guess is named AND
-    // the fact that it cannot work is said out loud, before approval.
+    // A bare request in a workspace with no test script and no declared gate:
+    // the harness no longer GUESSES a command that cannot pass (B232). The
+    // card names the check it actually runs, and the reason says why.
     {
       const guessed = session('write a note file\nn\n/tasks\n/exit\n')
       assert.equal(guessed.status, 0, guessed.stderr || guessed.stdout)
-      assert.match(guessed.stdout, /npm test/, 'the zero-config guess is named')
-      assert.match(guessed.stdout, /no "test" script/, 'and the warning says the guess cannot work')
+      assert.match(guessed.stdout, /workspace is not empty/, 'the guess is the check that can actually pass')
+      assert.doesNotMatch(guessed.stdout, /npm test/, 'and a doomed command is not guessed')
+      assert.doesNotMatch(guessed.stdout, /Verify: \$ npm test/, 'the card never advertises a failing run')
       assert.match(guessed.stdout, /cancelled by operator/, 'nothing ran')
     }
 

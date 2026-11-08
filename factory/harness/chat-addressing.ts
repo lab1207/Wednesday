@@ -28,7 +28,11 @@
  *    conversational seat. The operator gets an answer, not a refusal.
  */
 import type { CrewRole } from '../model-router/crew-routing'
-import { CREW_ROLES, normalizeCrewRole } from '../model-router/crew-routing'
+import {
+  CREW_ROLES,
+  crewRoleEnvName,
+  normalizeCrewRole,
+} from '../model-router/crew-routing'
 
 /**
  * The seats that can hold a conversation, best first.
@@ -37,6 +41,12 @@ import { CREW_ROLES, normalizeCrewRole } from '../model-router/crew-routing'
  * comes next; the coder is the one that knows the code; the reviewer and
  * the tester are specialists; the vision seat is LAST because it is the one
  * that needs an image to be useful.
+ *
+ * The AUTOCOMPLETE, BUG HUNTING and SECURITY AUDIT seats come after those
+ * (2026-11-07). They are specialists the operator reaches for on purpose --
+ * `@security-audit review what you just built` -- so they must never take a
+ * turn the operator meant for the team. `vision` stays ahead of them because
+ * a crew that only fills the vision seat should still talk to it.
  */
 export const CHAT_SEAT_ORDER: readonly CrewRole[] = [
   'architect',
@@ -45,6 +55,9 @@ export const CHAT_SEAT_ORDER: readonly CrewRole[] = [
   'reviewer',
   'tester',
   'vision',
+  'bug-hunter',
+  'security-audit',
+  'autocomplete',
 ]
 
 /** A chat turn addressed to one seat. */
@@ -109,7 +122,9 @@ export function chatSeatModel(
   })
   const slotModel = (inSlot?.model ?? '').trim()
   if (slotModel) return slotModel
-  return env[`FACTORY_CREW_${role.toUpperCase()}_MODEL`]?.trim() ?? ''
+  // The env name is spelled with underscores, so a seat whose name carries a
+  // hyphen (`bug-hunter`) is still reachable from a PowerShell profile.
+  return env[crewRoleEnvName(role)]?.trim() ?? ''
 }
 
 /**
@@ -131,7 +146,7 @@ export function pickChatSeat(
   // The crew fills no conversational seat. Fall back to the env profile's
   // first seat that has a model, so a chat still has somewhere to go.
   for (const role of CREW_ROLES) {
-    const model = (env[`FACTORY_CREW_${role.toUpperCase()}_MODEL`] ?? '').trim()
+    const model = (env[crewRoleEnvName(role)] ?? '').trim()
     if (model) return { role, model }
   }
   return null
@@ -139,7 +154,11 @@ export function pickChatSeat(
 
 /**
  * The addressable seat names, for the hint line and the help text (pure).
+ *
+ * They are listed in the SAME order as the preference order, so the hint
+ * line reads the way the seats actually answer: the core team first, the
+ * on-demand specialists after it.
  */
 export function chatAddressNames(): string[] {
-  return CREW_ROLES.map(role => `@${role}`)
+  return CHAT_SEAT_ORDER.map(role => `@${role}`)
 }

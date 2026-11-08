@@ -4,7 +4,7 @@ Wednesday is free and open source (Apache 2.0). This is where the project is
 going and where help is most useful. Beta means the terminal is the product
 today; everything below is actively being worked on, not a promise of dates.
 
-## Now - beta `0.2.0-beta.4`
+## Now - beta `0.2.0-beta.5`
 
 Shipped and in daily use:
 
@@ -17,6 +17,14 @@ Shipped and in daily use:
 - Local-first storage: keys in `~/.wednesday/.env`, state in `~/.wednesday/state/`.
 - Security hardening: central redaction, shell-free fenced tools, and a
   packaging-surface test in CI-able form.
+- The operator's six-seat roster — UI/UX, architecture, coding, autocomplete,
+  bug hunting, security audit — with each seat's GGUF source and the
+  Q4_K_M/Q5_K_M rule recorded rather than guessed.
+- `wednesday scan`: a commit-time gate that scans STAGED content, so a
+  generated secret never reaches git history.
+- A team turn: `FACTORY_MOA=1 FACTORY_MOA_PROPOSERS=coder,reviewer,tester`
+  asks several models in parallel and reads their answers back through one
+  aggregator.
 
 ## Next
 

@@ -356,7 +356,10 @@ async function main(): Promise<void> {
     // tester, reviewer, vision), so the receipt names the seats that DEVIATE
     // from the route and counts the ones that ride it - six names in a row
     // said the same thing six times.
-    assert.ok(rec.notes.some(n => n === 'crew: trio · 5 on example/model · vision acme/vision-small'),
+    // 2026-11-07: the roster added THREE more seats (autocomplete,
+    // bug-hunter, security-audit). An unstaffed seat rides the coder slot,
+    // so all three ride the route and the count moves from five to eight.
+    assert.ok(rec.notes.some(n => n === 'crew: trio · 8 on example/model · vision acme/vision-small'),
       'the trio receipt names the kept override, not the route it hoped for: ' + JSON.stringify(rec.notes))
     assert.ok(rec.progress.some(p => p === 'crew → trio'), 'a profile pick toasts on the screen path')
   })

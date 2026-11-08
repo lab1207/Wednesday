@@ -23,7 +23,7 @@ npm i -g @lab1207/wednesday@beta
 wednesday                # first run: /connect picks a model, then type a request
 ```
 
-> **Beta.** Version `0.2.0-beta.4`. The terminal app is the product today; the
+> **Beta.** Version `0.2.0-beta.5`. The terminal app is the product today; the
 > desktop IDE is still in development. Beta builds can change at any time.
 
 - **Website:** <https://wednesdaylabs.pages.dev>
@@ -111,6 +111,20 @@ Run this task? [y/N] — y approves, n/Esc rejects
 test PASS: node --test
 ```
 
+Verification is authoritative, and it is not only `npm test`. If the workspace
+declares a gate of its own — `typecheck`, `tsc`, `lint` — Wednesday runs it
+too, and a failing gate feeds back to the coder exactly like a failing test:
+
+```text
+Verification:
+  $ npm test
+  $ npm run typecheck        ← picked up from package.json
+```
+
+A small model's most common defect is a syntax slip, and the compiler is the
+cheapest, most deterministic reader of one. Only scripts the project already
+declares are used — nothing is guessed and nothing is downloaded.
+
 ## The terminal
 
 - Fullscreen TUI with a command palette (`ctrl+p`), pager, and per-seat model picks.
@@ -159,6 +173,38 @@ the coder and the reviewer at once. A round's wins and losses fold back into
 the scores, so the next round prefers the crew that proved itself. Routing is
 by measured capability fit.
 
+#### The operator's six-seat roster, and where the weights come from
+
+These are the seats and the local weights the roster runs. Serve them from any
+OpenAI-compatible server (llama.cpp, Ollama, LM Studio, vLLM) and point
+`FACTORY_CREW_<SEAT>_BASE_URL` at it.
+
+| Seat | Model | GGUF weights |
+| --- | --- | --- |
+| UI/UX DESIGN (`vision`) | Qwen2.5-VL-3B | [`unsloth/Qwen2.5-VL-3B-Instruct-GGUF`](https://huggingface.co/unsloth/Qwen2.5-VL-3B-Instruct-GGUF) |
+| ARCHITECTURE (`architect`) | Granite 3.1 2B | [`bartowski/granite-3.1-2b-instruct-GGUF`](https://huggingface.co/bartowski/granite-3.1-2b-instruct-GGUF) |
+| CORE CODING (`coder`) | Qwen2.5-Coder-3B | [`Qwen/Qwen2.5-Coder-3B-Instruct-GGUF`](https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF) |
+| AUTOCOMPLETE (`autocomplete`) | DeepSeek Coder 1.3B | [`TheBloke/deepseek-coder-1.3b-base-GGUF`](https://huggingface.co/TheBloke/deepseek-coder-1.3b-base-GGUF) |
+| BUG HUNTING (`bug-hunter`) | Llama-3.2-3B-Instruct | [`unsloth/Llama-3.2-3B-Instruct-GGUF`](https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF) |
+| SECURITY AUDIT (`security-audit`) | Granite Guardian 3.1 2B | [`DevQuasar-11/ibm-granite.granite-guardian-3.1-2b-GGUF`](https://huggingface.co/DevQuasar-11/ibm-granite.granite-guardian-3.1-2b-GGUF) |
+
+**Quantisation is mandatory: download the Q4_K_M or Q5_K_M GGUF.** You get
+99% of the coding performance at half the hardware resource usage.
+
+Three of these seats — AUTOCOMPLETE, BUG HUNTING and SECURITY AUDIT — wear
+that model by default the moment you give the seat its own endpoint. The other
+seats ride the slot mapping, because a box that holds one Q4 model at a time
+cannot run two: give a seat `FACTORY_CREW_<SEAT>_BASE_URL` (or
+`FACTORY_CREW_<SEAT>_MODEL`) and it wears its roster model.
+
+The SECURITY AUDIT seat runs the operator's prompt verbatim — *"Act as an
+aggressive senior security engineer and penetration tester. Review this
+generated code for hidden memory leaks, security vulnerabilities (like XSS or
+injection), and edge cases where it might crash. List them out."* — followed
+by a FOUND / NOT FOUND checklist, because a 2B model given an open-ended
+prompt returns three generic warnings and given a fixed list returns something
+you can act on.
+
 ### Context window
 
 Two numbers, and the **smaller one wins**. The registry gives the **model's**
@@ -203,6 +249,51 @@ column stays empty rather than showing a made-up figure. A local model shows
 Advanced overrides: `WEDNESDAY_STATE_HOME` moves the state directory;
 `HERMES_TASKS_PATH` and `FACTORY_EVENTS_PATH` select individual files.
 `WEDNESDAY_NO_UPDATE_CHECK=1` disables the daily version notice.
+
+### Ask a team instead of one model
+
+A chat turn is normally answered by one model. Set `FACTORY_MOA=1` with a
+team and the turn goes to every teammate in parallel, then one aggregator
+reads them all and returns a single answer:
+
+```bash
+FACTORY_MOA=1 FACTORY_MOA_PROPOSERS=coder,reviewer,tester wednesday
+```
+
+Each entry may name its own model — `reviewer=/models/reviewer-q4_k_m.gguf` —
+and `FACTORY_MOA_AGGREGATOR` picks who synthesises (the chat route by default).
+
+The receipt names every teammate, the aggregator, and what it cost:
+
+```text
+team coder + reviewer + tester (3/3 answered) -> local/qwen2.5-coder-3b-instruct
+```
+
+A teammate that fails does not kill the turn: the rest are still aggregated,
+and the dead one is named with its reason rather than silently dropped.
+
+## Keep a secret out of your history
+
+Wednesday ships the same security gate it applies to every run, as a command
+you can run yourself:
+
+```bash
+wednesday scan                  # scan the repo you are standing in
+wednesday scan --repo ./other   # scan another repository
+wednesday scan --install-hook   # block a bad commit before it exists
+```
+
+`--install-hook` writes `.githooks/pre-commit` in your repository and sets
+`core.hooksPath`, so the gate travels with the repo — every clone and every
+contributor gets it. It scans what is **staged**, so it judges the bytes that
+are actually being committed, and it uses the same rules that block a leaked
+secret in a Wednesday run.
+
+It matches *shapes*: a pass means "no secret shape, no dangerous call shape",
+never "no vulnerability". Escape hatches are loud rather than silent —
+`--allow-findings` (or `WEDNESDAY_SCAN_ALLOW=1`) reports the finding **and**
+says it is now part of the history; `git commit --no-verify` bypasses
+everything.
 
 ## Open source, and only open source
 

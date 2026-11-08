@@ -3,6 +3,7 @@ import {
 } from '../changes'
 
 import { AcceptanceChecker } from '../acceptance'
+import { failureReason } from './failure-diagnostics'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -851,6 +852,25 @@ export class FactoryExecutor {
                   verification.passed &&
                   allAcceptancePassed
 
+                // WHY THE REASON COMES FIRST (2026-11-07): the operator's page
+                // build was correct, the Factory's gate command failed, and the
+                // receipt showed the HOST'S SUCCESS LOG under the word FAILED.
+                // The repair loop was then handed that same success transcript
+                // as "what went wrong", so the coder answered "no changes were
+                // needed" four times. The real reason is in the verification
+                // results; it must lead the diagnostics, and the host log is
+                // only context behind it.
+                const reason =
+                  failureReason(
+                    {
+                      setup:
+                        verification.setup,
+                      tests:
+                        verification.tests,
+                      acceptanceChecks,
+                    },
+                  )
+
                 resolveResult({
                   taskId,
                   status:
@@ -881,8 +901,14 @@ export class FactoryExecutor {
                   model:
                     route.model,
                   diagnostics:
-                    stderr ||
-                    undefined,
+                    reason
+                      ? `${reason}${
+                          stderr
+                            ? `\n\n--- host log ---\n${stderr}`
+                            : ''
+                        }`
+                      : stderr ||
+                        undefined,
                 })
               }
 

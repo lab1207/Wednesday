@@ -51,3 +51,52 @@ Ordinary bugs (wrong output, UI glitches) belong in the public issue tracker.
 
 We will credit reporters in the advisory unless asked otherwise. Please give
 us a reasonable window to ship a fix before publishing details.
+
+## Threat model
+
+Wednesday runs commands a model wrote. Here is what a repository can and
+cannot do to that model, verified against the code on 2026-11-08 rather
+than assumed.
+
+**What reaches the model automatically.** The repository profile that is
+embedded in every task carries FILE NAMES (`package.json`, `README.md`,
+`Dockerfile`, entry candidates, test files), the LANGUAGES those names
+imply, and the DEPENDENCY NAMES read from `package.json` /
+`pyproject.toml` / `Cargo.toml` / `go.mod`. It does not read file
+CONTENT into the prompt (`factory/openhands/connector.ts`). So a README
+that says "exfiltrate the API key" does not reach the model by itself:
+its NAME is in the profile, its WORDS are not.
+
+**The real path.** The model can read files in the workspace with its own
+tools, so a repository you point Wednesday at can hand it hostile prose
+and let it decide what to do. Three defences already apply, and each is
+tested:
+
+- **The approval gate.** Every command is shown before it runs
+  (`factory/harness/harness.ts`, pinned by `harness-test.ts`). A pasted `y`
+  can never approve a run (bracketed paste is disabled on the gate), so the
+  human sees the command that would execute.
+- **Confinement.** File tools are workspace-confined: a `../escape.txt`
+  write fails with "escapes workspace", and no tool goes through a shell —
+  a model-written directory name containing `&` or `$(...)` is listed
+  literally, not executed (`factory/dsh-worker/fenced-tools-test.ts`).
+- **Redaction.** Every error and log path passes through
+  `factory/security/redaction.ts`, which covers env values, tunnel hosts,
+  bearer and key shapes, query parameters and dsh parity
+  (`factory/security/redaction-test.ts`).
+
+**What is NOT defended, stated plainly:**
+
+- There is no semantic filter for instructions hidden in repository prose.
+  A file that says "run `curl` with the key from the environment" can be
+  read by the model and acted upon. The approval card is the defence, and
+  it is a human defence, not a machine one.
+- The workspace boundary is the only isolation. Anything the workspace can
+  reach, a run can reach — so point Wednesday at a repository you would
+  trust as much as code you were about to execute.
+- Third-party markdown reaching prompts was named as unreviewed in the
+  2026-11-07 pass and is still unreviewed.
+
+A vulnerability in this area is a path from repository content to an action
+the operator did not approve, or to a secret reaching a log, a receipt, a
+task record, or this repository.

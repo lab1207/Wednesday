@@ -60,18 +60,43 @@ async function link(source, target) {
 }
 
 async function main() {
+  // The operator's ask (2026-11-08): "when install the Wednesday first time
+  // show installing lines in terminal how much done and still working".
+  //
+  // npm prints its own progress for downloading and unpacking, and then goes
+  // SILENT for the postinstall — which is the longest single step on a cold
+  // machine, because the DSH runtime closure is thousands of files. Silence
+  // there is indistinguishable from a hung install, so the first thing this
+  // script does is say it is working, and the last thing it does is say what
+  // it found. Every line is plain text on stdout/stderr; nothing here touches
+  // the network, which the package-surface test asserts.
+  console.log('[wednesday] linking the execution floor (DSH runtime)...')
+
+  const started = Date.now()
   const runtime = findRuntime()
   if (!runtime) {
     console.warn('[wednesday] no DSH runtime found (looked for the wednesday-runtime optional package and factory/dsh-worker/deploy/runtime). Task execution will fail until one is provisioned; `wednesday --help` and config still work.')
+    console.log('[wednesday] install finished degraded in ' + seconds(started) + ' — the terminal works, running a task does not.')
     return
   }
+
+  const total = LINK_NAMES.length
+  let done = 0
   for (const name of LINK_NAMES) {
+    done += 1
+    console.log(`[wednesday]   linking ${done}/${total}: ${name}`)
     await link(
       join(runtime, 'node_modules', '@deepseek-ai', name),
       join(INSTALL_ROOT, 'node_modules', '@deepseek-ai', name),
     )
   }
   console.log(`[wednesday] execution floor linked from ${runtime}`)
+  console.log(`[wednesday] install complete in ${seconds(started)} — run \`wednesday\` to start.`)
+}
+
+function seconds(started) {
+  const ms = Date.now() - started
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
 main().catch(error => {

@@ -1,6 +1,6 @@
 {
   "name": "@lab1207/wednesday",
-  "version": "0.2.0-beta.4",
+  "version": "0.2.0-beta.5",
   "description": "Free, open-source terminal harness that staffs small open models as a coding team: plan, approve, build, real tests, repair until green.",
   "license": "Apache-2.0",
   "author": "Vaibhav Hajare (lab1207)",
@@ -64,6 +64,7 @@
     "!**/.venv/"
   ],
   "scripts": {
+    "factory:scan": "node --import tsx scripts/wednesday-scan.ts",
     "wednesday": "node bin/wednesday.js",
     "factory:test": "node --import tsx factory/orchestrator/test.ts",
     "factory:connector": "node --import tsx factory/openhands/connector-test.ts",
@@ -99,7 +100,7 @@
     "@deepseek-ai/dsh-skill": "0.0.1-rc.3",
     "@deepseek-ai/dsh-skill-filesystem": "0.0.1-rc.3",
     "tsx": "4.23.13",
-    "undici": "^8.10.2"
+    "undici": "^8.12.4"
   },
   "optionalDependencies": {
     "@lab1207/wednesday-runtime-win32-x64": "0.1.0-dev.0"

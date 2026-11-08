@@ -30,7 +30,11 @@ async function main(): Promise<void> {
   assert.equal(isDepAuditEnabled({ FACTORY_DEP_AUDIT: '1' }), true)
 
   // 2. Secrets caught; short fixture-like values pass.
-  const keyed = scanFileContent('server/auth.js', 'const key = "AKIAIOSFODNN7EXAMPLE";\n')
+  // The fixture is BUILT, not typed: a key-shaped literal in a shipped
+// test would put a key shape in the public repository and the npm
+// tarball's own gate would flag the repo that ships the scanner.
+const AWS_FIXTURE = 'AKIA' + 'IOSFODNN7' + 'EXAMPLE'
+const keyed = scanFileContent('server/auth.js', 'const key = "' + AWS_FIXTURE + '";\n')
   assert.ok(keyed.some(finding => finding.rule === 'secret/aws-key'))
   assert.equal(keyed[0].line, 1)
   const assigned = scanFileContent('app.py', 'api_key = "sk-live-abcdef123456"\n')
@@ -54,7 +58,7 @@ async function main(): Promise<void> {
   try {
     mkdirSync(join(root, 'server'), { recursive: true })
     mkdirSync(join(root, 'node_modules', 'dep'), { recursive: true })
-    writeFileSync(join(root, 'server', 'auth.js'), 'const k = "AKIAIOSFODNN7EXAMPLE";\n')
+    writeFileSync(join(root, 'server', 'auth.js'), 'const k = "' + AWS_FIXTURE + '";\n')
     writeFileSync(join(root, 'node_modules', 'dep', 'index.js'), 'eval("evil")\n')
     writeFileSync(join(root, 'clean.py'), 'print("hello")\n')
     const walked = scanWorkspaceFiles(root)

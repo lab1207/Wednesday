@@ -17,10 +17,20 @@ import {
 } from './chat-addressing'
 
 async function main(): Promise<void> {
-  // 1. The preference order: the architect reasons, the coder types, the
-  //    vision seat is last because it needs an image to be useful.
+  // 1. The preference order: the architect reasons, the coder types, and the
+  //    on-demand specialists (vision, bug hunting, security audit) come after
+  //    the core seats -- they are reached for on purpose, never by accident.
   assert.equal(CHAT_SEAT_ORDER[0], 'architect')
-  assert.equal(CHAT_SEAT_ORDER[CHAT_SEAT_ORDER.length - 1], 'vision')
+  assert.ok(
+    CHAT_SEAT_ORDER.indexOf('coder') < CHAT_SEAT_ORDER.indexOf('vision'),
+    'the coder must outrank the vision seat',
+  )
+  for (const specialist of ['vision', 'bug-hunter', 'security-audit', 'autocomplete']) {
+    assert.ok(
+      CHAT_SEAT_ORDER.indexOf(specialist) > CHAT_SEAT_ORDER.indexOf('tester'),
+      `the ${specialist} specialist must come after the core seats`,
+    )
+  }
 
   // 2. A crew whose FIRST seat is the vision model must NOT send every
   //    question to the vision model. That was the bug.
@@ -103,15 +113,47 @@ async function main(): Promise<void> {
     assert.equal(chatSeatModel(crew, 'tester'), 'acme/coder-small')
   }
 
-  // 11. The addressable names are the six real seats.
+  // 11. The addressable names are every real seat, in the same order the
+  //     seats answer in. The three new seats (2026-11-07) join the six.
   assert.deepEqual(chatAddressNames(), [
     '@architect',
     '@planner',
     '@coder',
-    '@tester',
     '@reviewer',
+    '@tester',
     '@vision',
+    '@bug-hunter',
+    '@security-audit',
+    '@autocomplete',
   ])
+
+  // 12. A hyphenated seat is addressable and its env name is typeable.
+  //     `$env:FACTORY_CREW_BUG-HUNTER_MODEL` does not parse in PowerShell,
+  //     so the env name carries underscores.
+  {
+    const addressed = parseChatAddress('@bug-hunter find the crash')
+    assert.ok(addressed, 'a hyphenated seat must be addressable')
+    assert.equal(addressed!.role, 'bug-hunter')
+    assert.equal(addressed!.text, 'find the crash')
+
+    const crew = {
+      seats: [
+        { role: 'bug-hunter', model: 'acme/hunter-small' },
+      ],
+    }
+    assert.equal(chatSeatModel(crew, 'bug-hunter'), 'acme/hunter-small')
+
+    const withEnv = chatSeatModel(
+      { seats: [] },
+      'security-audit',
+      { FACTORY_CREW_SECURITY_AUDIT_MODEL: 'acme/guard-small' },
+    )
+    assert.equal(
+      withEnv,
+      'acme/guard-small',
+      'a hyphenated seat must resolve from its underscore env name',
+    )
+  }
 
   console.log('chat-addressing: PASS')
 }

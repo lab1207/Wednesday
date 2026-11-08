@@ -22,6 +22,11 @@ import {
 } from '../agents/text-list'
 
 import {
+  handoffFilesChanged,
+  normalizeAgentOutput,
+} from '../agents/handoff'
+
+import {
   scoreDifficulty,
 } from '../agents/difficulty'
 
@@ -166,7 +171,42 @@ export class DefaultRoleRunnerDispatcher
       )
     }
 
-    return runner
+    // THE SEAM (2026-11-08, B229). Every seat answer passes through here,
+    // so this is the ONE place a raw model shape can be repaired before a
+    // consumer sees it: the orchestrator's stage bookkeeping, the repair
+    // feedback, the duel and ballot merges, the specialist gate and the
+    // service receipt all read the fields the normaliser guarantees.
+    //
+    // `Object.create` and NOT a spread: the reviewer carries a
+    // `runSpecialistGate` method on its PROTOTYPE (the orchestrator reaches
+    // it through this very call), and an object spread copies only OWN
+    // properties -- a spread here would silently disable the specialist
+    // gate on every run. The wrapper keeps the runner's prototype chain,
+    // so anything else the runner offers is still reachable, and `run` is
+    // an own property that shadows the original.
+    const seam: typeof runner =
+      Object.create(
+        runner,
+      )
+
+    seam.run = async (
+      seat: {
+        id: AgentRoleId
+        purpose: string
+        buildPrompt(
+          context: AgentContext,
+        ): string
+      },
+      context: AgentContext,
+    ): Promise<AgentOutput> =>
+      normalizeAgentOutput(
+        await runner.run(
+          seat,
+          context,
+        ),
+      )
+
+    return seam
   }
 }
 
@@ -452,6 +492,58 @@ function walkLaneFiles(dir: string, base: string, out: string[]): boolean {
     }
   }
   return true
+}
+
+/**
+ * Every file the run changed, unioned across the seats.
+ *
+ * WHY (2026-11-07): the changed-file list used to be read from
+ * `finalOutput`, which is the LAST seat -- the reviewer. The reviewer writes
+ * no files, so the list was always empty, and the receipt told the operator
+ * "no changed files were reported" while the workspace held the page the
+ * coder had written. The list belongs to the RUN, not to whichever seat
+ * finished last, so it is unioned over every seat's output (including the
+ * failed ones, which may still have written the file) and over the
+ * executor's own disk delta.
+ *
+ * Pure and exported so the claim can be asserted without a live run.
+ */
+export function collectFilesChanged(
+  steps: AgentStep[],
+  engineeringResult?: EngineeringResult,
+): string[] {
+  const files: string[] = []
+
+  const add = (file: string): void => {
+    if (
+      file.length > 0 &&
+      !files.includes(file)
+    ) {
+      files.push(file)
+    }
+  }
+
+  for (const step of steps) {
+    // The seat's own list is UNTRUSTED shape (2026-11-08, B229): a seat
+    // that answered `filesChanged` with a bare string used to hand this
+    // receipt one file per CHARACTER -- a receipt that quietly files
+    // "index.html" as nine single-letter files. The seam normalises it.
+    for (const file of
+      handoffFilesChanged(
+        step.output,
+      )) {
+      add(file)
+    }
+  }
+
+  for (const file of
+    handoffFilesChanged(
+      engineeringResult,
+    )) {
+    add(file)
+  }
+
+  return files
 }
 
 /**
@@ -953,6 +1045,11 @@ export class FactoryOrchestrator {
           steps,
           finalOutput:
             outputs.at(-1),
+          filesChanged:
+            collectFilesChanged(
+              steps,
+              engineeringResult,
+            ),
           engineeringResult,
           blockingIssues,
           repairAttempts,
@@ -984,6 +1081,11 @@ export class FactoryOrchestrator {
           steps,
           finalOutput:
             outputs.at(-1),
+          filesChanged:
+            collectFilesChanged(
+              steps,
+              engineeringResult,
+            ),
           engineeringResult,
           blockingIssues,
           repairAttempts,
@@ -1519,6 +1621,27 @@ export class FactoryOrchestrator {
                 output.blockingIssues ??
                 []
               ),
+            )
+
+            // A FAILED SEAT STILL PRODUCED EVIDENCE (2026-11-07).
+            //
+            // The operator's run wrote a correct page and the Factory's own
+            // gate failed. The failed coder's output was dropped on the floor
+            // here, which had two consequences the operator saw directly:
+            //
+            //  - the repair loop had AMNESIA. `buildRepairFeedback` reads the
+            //    previous coder's blocking issues from `previousOutputs`, and
+            //    that output was never in the list -- so the repair attempt
+            //    was handed the ORIGINAL prompt with zero feedback and
+            //    answered "no changes were needed" until the ceiling ran out.
+            //  - the receipt said "no changed files were reported" while the
+            //    workspace held the file the coder had written, because the
+            //    only carrier of `filesChanged` was the dropped output.
+            //
+            // The output is kept so the next attempt knows what happened and
+            // so the receipt can name what landed.
+            laneOutputs.push(
+              output,
             )
 
             const completedEvent =
@@ -3073,6 +3196,11 @@ export class FactoryOrchestrator {
           steps,
           finalOutput:
             reviewer,
+          filesChanged:
+            collectFilesChanged(
+              steps,
+              engineeringResult,
+            ),
           engineeringResult,
           blockingIssues: [],
           repairAttempts,

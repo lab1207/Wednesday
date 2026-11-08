@@ -10,10 +10,27 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # All three platforms, not just Linux (2026-11-08, B233).
+        #
+        # WHY: the operator's run failed for a week with a receipt that
+        # blamed the model, and the cause was a `cmd.exe` quoting rule that
+        # only exists on Windows (B222: the Factory's own gate command
+        # escaped `"` as `\"`, which is correct for `sh` and wrong for
+        # `cmd.exe`, so the gate died on a correct deliverable). CI ran on
+        # ubuntu only, so the platform where the defect lived was never
+        # exercised by a build -- and the same class of defect (a
+        # POSIX-shaped assumption in a code path that runs on Windows) can
+        # ship again tomorrow.
+        #
+        # Every step below is offline and makes no model call, so all three
+        # runners are equally green when the code is right -- verified
+        # locally on Windows before this landed.
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node: [24]
     steps:
       - uses: actions/checkout@v4
