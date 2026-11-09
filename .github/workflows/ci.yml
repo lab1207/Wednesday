@@ -59,6 +59,17 @@ jobs:
       - name: Secret redaction
         run: node --import tsx factory/security/redaction-test.ts
 
+      - name: Nothing private ships (npm + GitHub surfaces)
+        # The operator's hard rule (2026-11-08): no API keys, codes, secret
+        # shapes and no Google-analytics-style tracking code in the npm
+        # release or on GitHub, in ANY version.
+        #
+        # WHY IT RUNS HERE AND NOT ONLY AT RELEASE: the two shapes that
+        # reached GitHub reached it because a release-time scan had an
+        # allowlist. This test has no allowlist, and it runs on all three
+        # platforms, so a shape in a PR is caught before it is merged.
+        run: node --import tsx factory/security/no-private-info-test.ts
+
       - name: Approval gate + pipeline
         run: node --import tsx factory/harness/harness-test.ts
 

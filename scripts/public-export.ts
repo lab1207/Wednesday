@@ -8,7 +8,7 @@
  * Why this exists: the working repository also holds internal planning docs,
  * business notes, and a dev log. The public repo is never a checkout of it.
  * This exports an allowlisted tree — free core only — and scans it for
- * secrets and personal paths.
+ * secrets, tracking code and personal paths.
  *
  * Since 2026-11-05 the public repo keeps NORMAL history: each export is
  * committed as a child of the current public master and pushed with an
@@ -22,6 +22,9 @@ import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, readFileS
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { publicFiles } from './export-surface.js'
+import { scanText } from './leak-scan.js'
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 /** Always rebuilt: the exact bytes the scan and the commit will carry. */
 const staging = join(root, 'dist', 'public-staging')
@@ -29,64 +32,6 @@ const staging = join(root, 'dist', 'public-staging')
 const repo = join(root, 'dist', 'public-repo')
 const LABS_URL = 'https://github.com/lab1207/Wednesday.git'
 const args = new Set(process.argv.slice(2))
-
-/** Files and directories that are allowed into the public repository. */
-const ALLOW_FILES = new Set([
-  '.gitignore',
-  'LICENSE',
-  'README.md',
-  'CONTRIBUTING.md',
-  'ROADMAP.md',
-  'SECURITY.md',
-  'CODE_OF_CONDUCT.md',
-  'THIRD_PARTY_LICENSES.md',
-  'package.json',
-  'package-lock.json',
-])
-const ALLOW_DIRS = ['bin/', 'factory/', 'crewai/', 'ecc/', 'shared/', 'scripts/', 'media/', '.github/']
-
-/** Never public, even though they are tracked. */
-const DENY = [
-  /^docs\//,
-  /^site\//,
-  /^wednesday-theme\//,
-  /^AGENTS\.md$/,
-  /^factory\/harness\/BUGS\.md$/,
-  /^factory\/harness\/yc-demo-test\.ts$/,
-  /^factory\/tmp\//,
-  /(^|\/)\.env/,
-  /(^|\/)state\//,
-]
-
-/** Patterns that must not appear anywhere in the export. */
-const LEAKS: Array<[string, RegExp]> = [
-  ['OpenAI-style key', /\bsk-[A-Za-z0-9_-]{20,}/],
-  ['xAI key', /\bxai-[A-Za-z0-9_-]{16,}/],
-  ['NVIDIA key', /\bnvapi-[A-Za-z0-9_-]{16,}/],
-  ['GitHub token', /\bgh[pousr]_[A-Za-z0-9]{20,}/],
-  ['npm token', /\bnpm_[A-Za-z0-9]{20,}/],
-  ['AWS key', /\bAKIA[0-9A-Z]{16}\b/],
-  ['Google key', /\bAIza[0-9A-Za-z_-]{20,}\b/],
-  ['private key block', /BEGIN [A-Z ]*PRIVATE KEY/],
-  ['real ngrok host', /\b[a-z0-9][a-z0-9-]{4,}\.ngrok(-free)?\.(dev|app|io)\b/],
-  ['personal Windows profile', /C:\\Users\\(?!operator\b|you\b|me\b|example\b|Public\b|<)/i],
-  ['personal POSIX home', /\/home\/(?!you\b|user\b|runner\b)[a-z][a-z0-9_-]{2,}\//i],
-  ['internal doc reference', /\bWEDNESDAY_(BUSINESS|MONEY|SECURITY_AUDIT|SNAPSHOT|BUILD_HISTORY)/],
-]
-
-function tracked (): string[] {
-  // Tracked files plus new files that are not ignored, so a fresh template or
-  // page is not silently left out of the export.
-  return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8' })
-    .split('\0')
-    .filter(Boolean)
-}
-
-function allowed (file: string): boolean {
-  if (DENY.some(rx => rx.test(file))) return false
-  if (ALLOW_FILES.has(file)) return true
-  return ALLOW_DIRS.some(dir => file.startsWith(dir))
-}
 
 function walk (dir: string): string[] {
   const found: string[] = []
@@ -102,8 +47,7 @@ rmSync(staging, { recursive: true, force: true })
 mkdirSync(staging, { recursive: true })
 
 let copied = 0
-for (const file of tracked()) {
-  if (!allowed(file)) continue
+for (const file of publicFiles(root)) {
   const src = join(root, file)
   if (!existsSync(src)) continue
   const dest = join(staging, file)
@@ -133,10 +77,25 @@ writeFileSync(join(staging, '.gitignore'), [
   '',
 ].join('\n'))
 
-/** Documented fake fixtures used by the redaction tests — not real credentials. */
-const KNOWN_FAKE = new RegExp(
-  '^(' + ['AKIA' + 'ABCDEFGHIJKLMNOP', 'AKIA' + 'IOSFODNN7' + 'EXAMPLE', 'AIza' + 'SyA1234567890abcdefghij'].join('|') + ')$'
-)
+/**
+ * The leak rules live in ONE place, shared with the release regression.
+ *
+ * WHY (operator rule, 2026-11-08: no API keys, codes or secret shapes --
+ * and no Google-analytics-style tracking code -- in the npm release OR on
+ * GitHub, in ANY version): this exporter used to carry its own pattern
+ * list, and the regression carried another one. Two lists drift, and a
+ * "known fake" allowlist could sit between the scan and the answer: the
+ * scan said PASS while the tree carried a key shape, because the shape was
+ * excused. A stranger reading the public repo cannot see an excuse, so
+ * there is no excuse any more.
+ *
+ * WHY NO EXEMPTION LIST: every fixture that used to need one is now BUILT
+ * AT RUNTIME in the file that uses it (see
+ * factory/security/redaction-test.ts and
+ * factory/verification/security-scan-test.ts), so the exported tree carries
+ * ZERO key shapes. A literal key shape in the source now aborts the
+ * export, which is the point.
+ */
 const problems: string[] = []
 const files = walk(staging)
 for (const full of files) {
@@ -144,11 +103,8 @@ for (const full of files) {
   if (rel === '.gitignore') continue
   if (/\.(png|jpg|jpeg|gif|webp|ico|woff2?|ttf|so|dll|exe)$/i.test(rel)) continue
   const text = readFileSync(full, 'utf8')
-  for (const [name, rx] of LEAKS) {
-    const match = text.match(rx)
-    if (match && !KNOWN_FAKE.test(match[0])) {
-      problems.push(`${rel}: ${name} -> ${match[0].slice(0, 60)}`)
-    }
+  for (const hit of scanText(text)) {
+    problems.push(`${rel}: ${hit}`)
   }
 }
 

@@ -1,3 +1,10 @@
+try:
+    from .telemetry import disable_telemetry
+except ImportError:  # run as a plain script, not as a package module
+    from telemetry import disable_telemetry
+
+TELEMETRY_OPTOUTS = disable_telemetry()  # must precede the crewai import
+
 from crewai import Agent, Crew, LLM, Task
 
 from .contracts import EngineeringResult, EngineeringTask
