@@ -31,11 +31,78 @@ import { NVIDIA_DEFAULT_MODEL, resolveNvidiaBaseURL, resolveNvidiaKey } from './
 import { buildIdentitySection } from '../agents/identity'
 import { recordUsage } from './usage'
 import { clampMessages, resolvePromptBudget } from './prompt-budget'
+import {
+  userContent,
+  type ChatPart as ContentPart,
+} from './providers/chat'
+import { wireTool as wireToolSpec } from './providers/request-body'
+import type { ToolSpec } from './types'
 import { Agent, fetch as undiciFetch } from 'undici'
 
+/**
+ * One tool call the model asked for.
+ *
+ * The arguments arrive as a JSON STRING (the wire shape), so they are parsed
+ * where they are used, not here.
+ */
+export interface ToolCall {
+  /** The wire's id, so the answer can be matched to the call. */
+  id: string
+  /** The tool's name. */
+  name: string
+  /** The arguments, as the model wrote them. */
+  arguments: string
+}
+
+/** What the chat needs to offer tools and run them. */
+export interface ChatToolOptions {
+  /** The tools the model may call. */
+  tools?: ToolSpec[]
+  /**
+   * Run one tool the model asked for and return its output.
+   *
+   * The factory does not know what a tool MEANS: the MCP client does. So
+   * the caller injects the runner, and the chat only owns the LOOP: ask,
+   * run, feed the result back, ask again.
+   */
+  executeTool?: (name: string, args: Record<string, unknown>) => Promise<string>
+  /** Told about every call, so the operator can see the model reach out. */
+  onToolCall?: (name: string, args: Record<string, unknown>) => void
+}
+
+/** How many times the model may call tools in one turn. */
+const MAX_TOOL_ROUNDS = 4
+
+/** How much of a tool's output rides back into the conversation. */
+const MAX_TOOL_OUTPUT_CHARS = 4000
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /**
+   * Image attachments for this turn (2026-11-10): data URLs or https URLs.
+   *
+   * WHY A SEPARATE FIELD AND NOT A PARTS ARRAY: the whole prompt-budget
+   * layer measures `content` as a string (`clampMessages`, `estimateTokens`)
+   * and the compaction keeps head and tail of a turn's TEXT. An image has
+   * no text to trim, so it rides beside the text and is converted to the
+   * OpenAI content-parts shape only on the wire -- exactly where the
+   * provider layer already does it for the role providers
+   * (`providers/chat.ts` -> `userContent`).
+   *
+   * A turn with images costs tokens on the provider's side, not in the
+   * text budget, so the budget stays a budget of WORDS.
+   */
+  images?: string[]
+  /**
+   * The tool calls this assistant turn made (2026-11-11).
+   *
+   * Only on an assistant turn; the answers ride in the `tool` turns that
+   * follow, each carrying its `toolCallId`.
+   */
+  toolCalls?: ToolCall[]
+  /** The call this `tool` turn answers. */
+  toolCallId?: string
 }
 
 export interface ChatRoute {
@@ -154,14 +221,69 @@ export function buildChatSystemPrompt(): string {
  * Conversation for one request: the fixed system prompt first, then the
  * remembered turns — oldest first, capped — then the new user turn.
  * Stored system rows are dropped so the persona stays single.
+ *
+ * `images` ride the NEW turn only (2026-11-10): they are what the operator
+ * attached to THIS message, and re-sending a 4MB picture on every later
+ * turn of the conversation would cost more than the picture is worth.
  */
-export function buildChatRequest(history: ChatMessage[], userMessage: string): ChatMessage[] {
+export function buildChatRequest(
+  history: ChatMessage[],
+  userMessage: string,
+  images?: string[],
+): ChatMessage[] {
   const turns = history.filter(m => m.role !== 'system').slice(-CHAT_HISTORY_CAP)
+  const turn: ChatMessage = {
+    role: 'user',
+    content: userMessage,
+  }
+  const attached = (images ?? []).map(url => url.trim()).filter(Boolean)
+  if (attached.length > 0) turn.images = attached
   return [
     { role: 'system', content: buildChatSystemPrompt() },
     ...turns,
-    { role: 'user', content: userMessage },
+    turn,
   ]
+}
+
+/**
+ * The wire shape of a conversation: a turn with images becomes content
+ * PARTS (text + image_url), exactly like the role providers do
+ * (`providers/chat.ts`). A turn without images stays a plain string, so
+ * the ordinary request body is byte-identical to what it always was.
+ *
+ * The tool turns (2026-11-11) have their own shapes: an assistant turn
+ * that called tools carries `tool_calls`, and a `tool` turn carries the id
+ * of the call it answers.
+ */
+export function toWireMessages(
+  messages: ChatMessage[],
+): Array<{ role: ChatMessage['role']; content: string | ContentPart[] }> {
+  return messages.map(message => {
+    if (message.role === 'tool') {
+      return {
+        role: message.role,
+        content: message.content,
+        tool_call_id: message.toolCallId ?? '',
+      } as { role: ChatMessage['role']; content: string | ContentPart[] }
+    }
+    if (message.toolCalls && message.toolCalls.length > 0) {
+      return {
+        role: message.role,
+        content: message.content,
+        tool_calls: message.toolCalls.map(call => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.name, arguments: call.arguments },
+        })),
+      } as { role: ChatMessage['role']; content: string | ContentPart[] }
+    }
+    return message.images && message.images.length > 0
+      ? {
+          role: message.role,
+          content: userContent(message.content, message.images),
+        }
+      : { role: message.role, content: message.content }
+  })
 }
 
 /**
@@ -179,6 +301,57 @@ interface ChatPart {
   content?: unknown
   reasoning_content?: unknown
   reasoning?: unknown
+  tool_calls?: ToolCallChunk[]
+}
+
+/** One tool call as the wire sends it (a piece of a bigger call). */
+interface ToolCallChunk {
+  index?: number
+  id?: string
+  type?: string
+  function?: { name?: string; arguments?: string }
+}
+
+/**
+ * The tool calls of one turn, collected from the stream.
+ *
+ * A streamed call arrives in pieces: the name in the first chunk, the
+ * arguments in several more, each keyed by its `index`. So the pieces are
+ * gathered per index and stitched at the end.
+ */
+class ToolCallAccumulator {
+  private readonly drafts = new Map<number, { id: string; name: string; args: string }>()
+
+  /** Take one chunk's worth of calls. */
+  add(chunks: ToolCallChunk[] | undefined): void {
+    for (const chunk of chunks ?? []) {
+      const index = typeof chunk.index === 'number' ? chunk.index : 0
+      const draft = this.drafts.get(index) ?? { id: '', name: '', args: '' }
+      if (chunk.id) draft.id = chunk.id
+      const name = chunk.function?.name
+      if (name) {
+        // The name normally arrives once. A server that repeats it sends the
+        // SAME name, and one that splits it sends a longer one -- both are
+        // handled by taking the longer name.
+        if (!draft.name || name.length > draft.name.length) draft.name = name
+      }
+      const args = chunk.function?.arguments
+      if (args) draft.args += args
+      this.drafts.set(index, draft)
+    }
+  }
+
+  /** The calls, in the order the model made them. */
+  list(): ToolCall[] {
+    return [...this.drafts.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([index, draft]) => ({
+        id: draft.id || `call_${index}`,
+        name: draft.name,
+        arguments: draft.args || '{}',
+      }))
+      .filter(call => call.name.length > 0)
+  }
 }
 
 interface ChatPayload {
@@ -202,8 +375,10 @@ function deltaEntries(
   s: TurnState,
   onDelta?: (piece: string) => void,
   onReasoning?: (piece: string) => void,
+  toolCalls?: ToolCallAccumulator,
 ): void {
   if (!part) return
+  if (toolCalls && part.tool_calls) toolCalls.add(part.tool_calls)
   const piece = readText(part.content)
   if (piece) {
     s.content += piece
@@ -269,6 +444,7 @@ export async function chatComplete(
   onDelta?: (piece: string) => void,
   signal?: AbortSignal,
   onReasoning?: (piece: string) => void,
+  toolOptions?: ChatToolOptions,
 ): Promise<ChatResult> {
   const model = route.model.trim().replace(/\/+$/, '')
   if (!model) {
@@ -287,96 +463,162 @@ export async function chatComplete(
   // Auto-compaction (2026-11-01, operator request): a conversation that grows
   // past the model's window is fitted before it is sent, oldest turns first.
   // Sending it whole made a 13K model head-truncate its own instructions.
+  //
+  // The fit happens ONCE, before the tool loop: the loop's exchange (the
+  // assistant's call, the tool's answer) must stay together, and a second
+  // fit could drop the call and keep its answer.
   const fitted = clampMessages(messages, resolvePromptBudget())
-  messages = fitted.messages as ChatMessage[]
+  const opening = fitted.messages as ChatMessage[]
   const baseHeaders: Record<string, string> = {
     'content-type': 'application/json',
     authorization: `Bearer ${route.apiKey}`,
     ...(route.headers ?? {}),
   }
-  const bodyJSON = JSON.stringify({
-    model,
-    messages,
-    stream: true,
-    stream_options: { include_usage: true },
-  })
-  const init: Parameters<typeof undiciFetch>[1] = {
-    method: 'POST',
-    headers: baseHeaders,
-    body: bodyJSON,
-    ...(signal ? { signal } : {}),
-    ...(isLocal ? { dispatcher: NO_TIMEOUT_CHAT } : {}),
-  }
 
-  const response = route.name === 'openrouter'
-    ? await fetchWithRetry(undiciFetch, `${route.baseURL}/chat/completions`, init, resolveRetryConfig())
-    : await undiciFetch(`${route.baseURL}/chat/completions`, init)
+  // The tools the model may call. A turn with no tools sends no `tools`
+  // field, so an ordinary request body stays byte-identical to what it
+  // always was.
+  const tools = toolOptions?.tools ?? []
+  const exchange: ChatMessage[] = []
+  let tokensIn = 0
+  let tokensOut = 0
+  let reasoning = ''
+  let droppedTurns = fitted.dropped
+  let text = ''
 
-  if (!response.ok) {
-    const raw = await response.text()
-    throw new Error(explainChatFailure(route.name, response.status, raw))
-  }
-  if (!response.body) throw new Error(`${route.name} chat response had no body`)
-
-  const decoder = new TextDecoder()
-  const s: TurnState = { content: '', reasoning: '', tokensIn: 0, tokensOut: 0 }
-
-  const consumeLine = (line: string): void => {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) return
-    const payload = trimmed.slice(5).trim()
-    if (payload === '[DONE]') return
-    let data: ChatPayload
-    try {
-      data = JSON.parse(payload) as ChatPayload
-    } catch {
-      return
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    const bodyJSON = JSON.stringify({
+      model,
+      // The images ride the wire as content PARTS (2026-11-10). A turn with
+      // no images is still a plain string, so an ordinary request body is
+      // byte-identical to what it always was.
+      messages: toWireMessages([...opening, ...exchange]),
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(tools.length > 0 ? { tools: tools.map(wireToolSpec), tool_choice: 'auto' } : {}),
+    })
+    const init: Parameters<typeof undiciFetch>[1] = {
+      method: 'POST',
+      headers: baseHeaders,
+      body: bodyJSON,
+      ...(signal ? { signal } : {}),
+      ...(isLocal ? { dispatcher: NO_TIMEOUT_CHAT } : {}),
     }
-    deltaEntries(data.choices?.[0]?.delta ?? data.choices?.[0]?.message, s, onDelta, onReasoning)
-    usageFrom(data, s)
-  }
 
-  const contentType = response.headers.get('content-type') ?? ''
-  if (!contentType.includes('text/event-stream')) {
-    // Some OpenAI-compatible servers wrap everything despite `stream: true`.
-    const raw = (await response.text()).trim()
-    if (!raw.includes('data:')) {
+    const response = route.name === 'openrouter'
+      ? await fetchWithRetry(undiciFetch, `${route.baseURL}/chat/completions`, init, resolveRetryConfig())
+      : await undiciFetch(`${route.baseURL}/chat/completions`, init)
+
+    if (!response.ok) {
+      const raw = await response.text()
+      throw new Error(explainChatFailure(route.name, response.status, raw))
+    }
+    if (!response.body) throw new Error(`${route.name} chat response had no body`)
+
+    const decoder = new TextDecoder()
+    const s: TurnState = { content: '', reasoning: '', tokensIn: 0, tokensOut: 0 }
+    const calls = new ToolCallAccumulator()
+
+    const consumeLine = (line: string): void => {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) return
+      const payload = trimmed.slice(5).trim()
+      if (payload === '[DONE]') return
       let data: ChatPayload
       try {
-        data = JSON.parse(raw) as ChatPayload
+        data = JSON.parse(payload) as ChatPayload
       } catch {
-        throw new Error(`${route.name} returned invalid JSON: ${describeBody(raw)}`)
+        return
       }
-      deltaEntries(data.choices?.[0]?.delta ?? data.choices?.[0]?.message, s, onDelta, onReasoning)
+      deltaEntries(data.choices?.[0]?.delta ?? data.choices?.[0]?.message, s, onDelta, onReasoning, calls)
       usageFrom(data, s)
-    } else {
-      for (const line of raw.split('\n')) consumeLine(line)
     }
-  } else {
-    let buffer = ''
-    for await (const chunk of response.body) {
-      buffer += decoder.decode(chunk as BufferSource, { stream: true })
-      let newline = buffer.indexOf('\n')
-      while (newline !== -1) {
-        consumeLine(buffer.slice(0, newline))
-        buffer = buffer.slice(newline + 1)
-        newline = buffer.indexOf('\n')
+
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('text/event-stream')) {
+      // Some OpenAI-compatible servers wrap everything despite `stream: true`.
+      const raw = (await response.text()).trim()
+      if (!raw.includes('data:')) {
+        let data: ChatPayload
+        try {
+          data = JSON.parse(raw) as ChatPayload
+        } catch {
+          throw new Error(`${route.name} returned invalid JSON: ${describeBody(raw)}`)
+        }
+        deltaEntries(data.choices?.[0]?.delta ?? data.choices?.[0]?.message, s, onDelta, onReasoning, calls)
+        usageFrom(data, s)
+      } else {
+        for (const line of raw.split('\n')) consumeLine(line)
       }
+    } else {
+      let buffer = ''
+      for await (const chunk of response.body) {
+        buffer += decoder.decode(chunk as BufferSource, { stream: true })
+        let newline = buffer.indexOf('\n')
+        while (newline !== -1) {
+          consumeLine(buffer.slice(0, newline))
+          buffer = buffer.slice(newline + 1)
+          newline = buffer.indexOf('\n')
+        }
+      }
+      buffer += decoder.decode()
+      if (buffer.trim()) consumeLine(buffer)
     }
-    buffer += decoder.decode()
-    if (buffer.trim()) consumeLine(buffer)
+
+    tokensIn += s.tokensIn
+    tokensOut += s.tokensOut
+    reasoning = s.reasoning || reasoning
+    text = stripThinking((s.content || s.reasoning).trim())
+
+    // No tools, no runner, or the round budget spent: the answer is the
+    // answer.
+    const requested = calls.list()
+    if (!toolOptions?.executeTool || requested.length === 0) break
+    if (round === MAX_TOOL_ROUNDS - 1) break
+
+    // The exchange rides back into the conversation: what the model asked
+    // for, and what each tool answered.
+    exchange.push({
+      role: 'assistant',
+      content: text,
+      toolCalls: requested,
+    })
+    for (const call of requested) {
+      let args: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse(call.arguments || '{}') as unknown
+        if (parsed && typeof parsed === 'object') args = parsed as Record<string, unknown>
+      } catch {
+        args = {}
+      }
+      let output = ''
+      try {
+        toolOptions.onToolCall?.(call.name, args)
+        output = await toolOptions.executeTool(call.name, args)
+      } catch (error) {
+        output = `the tool failed: ${error instanceof Error ? error.message : String(error)}`
+      }
+      const clipped =
+        output.length > MAX_TOOL_OUTPUT_CHARS
+          ? `${output.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n\n[truncated ${output.length - MAX_TOOL_OUTPUT_CHARS} characters]`
+          : output
+      exchange.push({
+        role: 'tool',
+        content: clipped,
+        toolCallId: call.id,
+      })
+    }
   }
 
-  if (s.tokensIn || s.tokensOut) {
-    recordUsage(route.name, model, s.tokensIn, s.tokensOut)
+  if (tokensIn || tokensOut) {
+    recordUsage(route.name, model, tokensIn, tokensOut)
   }
-  const text = stripThinking((s.content || s.reasoning).trim())
   if (!text) throw new Error(`${route.name} returned no usable assistant content`)
   return {
     text,
-    tokensIn: s.tokensIn || fitted.after,
-    tokensOut: s.tokensOut,
-    reasoning: s.reasoning,
-    droppedTurns: fitted.dropped,
+    tokensIn: tokensIn || fitted.after,
+    tokensOut,
+    reasoning: reasoning || undefined,
+    droppedTurns,
   }
 }

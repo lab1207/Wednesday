@@ -24,7 +24,7 @@ import { maxOutputFor, supportsToolsFor } from '../model-registry'
 import { userContent } from './chat'
 
 /** A tool in the OpenAI wire shape. */
-function wireTool(tool: ToolSpec): Record<string, unknown> {
+export function wireTool(tool: ToolSpec): Record<string, unknown> {
   return {
     type: 'function',
     function: {

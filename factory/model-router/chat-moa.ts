@@ -49,6 +49,16 @@ export async function runChatMoa(options: {
   team: readonly ChatTeamMember[]
   aggregator: ChatRoute
   history?: readonly ChatMessage[]
+  /**
+   * The images the operator attached (2026-11-10): data URLs or https URLs.
+   *
+   * The TEAM sees them -- every teammate is asked the same question, and a
+   * question about a picture that only one of them can see is not a team
+   * answer. The AGGREGATOR sees them too: it reads the proposers' words,
+   * and a picture the proposers described in prose is not the same as the
+   * picture itself.
+   */
+  images?: string[]
   onDelta?: (piece: string) => void
   signal?: AbortSignal
   /** Injected so a test can drive this with no network. */
@@ -59,7 +69,7 @@ export async function runChatMoa(options: {
   // passes its own.
   const complete = options.complete ?? chatComplete
 
-  const messages = buildChatRequest([...history], question)
+  const messages = buildChatRequest([...history], question, options.images)
   const system = buildChatSystemPrompt()
 
   const settled = await Promise.allSettled(
@@ -117,7 +127,13 @@ export async function runChatMoa(options: {
       aggregator,
       [
         { role: 'system', content: MOA_AGGREGATOR_SYSTEM },
-        { role: 'user', content: buildAggregatorPrompt(question, proposers) },
+        {
+          role: 'user',
+          content: buildAggregatorPrompt(question, proposers),
+          ...(options.images && options.images.length > 0
+            ? { images: options.images }
+            : {}),
+        },
       ],
       options.onDelta,
       options.signal,

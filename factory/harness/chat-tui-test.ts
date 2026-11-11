@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 /**
  * TUI chat smoke (2026-10-30): the operator surface must answer a plain
@@ -13,8 +15,16 @@ import { join } from 'node:path'
  * harness is started as a real child process with piped stdin (the classic
  * path), the operator types one message and leaves with /exit.
  *
+ * THE CHILD GETS ITS OWN STATE HOME (2026-11-10): with a team selected on
+ * the operator's machine, the active crew overrode the route this test pins,
+ * and the chat went to a hosted model that answered "not a valid model id"
+ * instead of the scripted local server. The test asserted on the MODEL, and
+ * the model's choice was not the test's to make.
+ *
  * Run: npx tsx factory/harness/chat-tui-test.ts
  */
+
+const stateHome = mkdtempSync(join(tmpdir(), 'wednesday-chat-tui-'))
 
 const ANSWER = 'TUI_CHAT_OK'
 
@@ -58,6 +68,7 @@ const child = spawn(process.execPath, [entry], {
     LOCAL_LLM_BASE_URL: `http://127.0.0.1:${port}/v1`,
     LOCAL_LLM_MODEL: 'fake-chat',
     LOCAL_LLM_API_KEY: 'local',
+    WEDNESDAY_STATE_HOME: join(stateHome, '.wednesday', 'state'),
     WEDNESDAY_NO_STARTUP_HEALTH: '1',
     WEDNESDAY_NO_UPDATE_CHECK: '1',
   },

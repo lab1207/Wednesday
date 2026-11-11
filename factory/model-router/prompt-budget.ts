@@ -131,7 +131,7 @@ export function clampPrompt(prompt: string, budgetTokens: number): ClampedPrompt
 }
 
 export interface BudgetedMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
 }
 

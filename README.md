@@ -19,12 +19,18 @@ verification, and repair until the tests pass.
 ![Wednesday starting in Windows Terminal: the TUI connects a local qwen2.5-coder-3b model and draws its crew and command list](https://raw.githubusercontent.com/lab1207/Wednesday/master/media/wednesday-demo.gif)
 
 ```bash
-npm i -g @lab1207/wednesday@beta
+npm i -g @lab1207/wednesday@beta --foreground-scripts
 wednesday                # first run: /connect picks a model, then type a request
 ```
 
-> **Beta.** Version `0.2.0-beta.5`. The terminal app is the product today; the
+> **Beta.** Version `0.2.0-beta.6`. The terminal app is the product today; the
 > desktop IDE is still in development. Beta builds can change at any time.
+
+> **Why `--foreground-scripts`?** npm hides lifecycle-script output by
+> default, so a plain install goes silent while Wednesday links its execution
+> floor — the longest step on a cold machine, and indistinguishable from a
+> hung install. The flag makes the installer say what it is doing. Everything
+> else works without it; you just see less.
 
 - **Website:** <https://wednesdaylabs.pages.dev>
 - **npm:** <https://www.npmjs.com/package/@lab1207/wednesday>
@@ -56,11 +62,15 @@ Every run has a receipt: `/tasks`, `/result`, `/events`, `/run`.
 ## Install
 
 ```bash
-npm i -g @lab1207/wednesday@beta   # recommended beta channel
-npm i -g @lab1207/wednesday        # latest tag
-npm i -g @lab1207/wednesday@dev    # newest commits, may break
+npm i -g @lab1207/wednesday@beta --foreground-scripts   # recommended beta channel
+npm i -g @lab1207/wednesday --foreground-scripts        # latest tag
+npm i -g @lab1207/wednesday@dev --foreground-scripts    # newest commits, may break
 npx @lab1207/wednesday@beta        # one-shot, no global install
 ```
+
+`--foreground-scripts` is optional but recommended: npm hides lifecycle output
+by default, so without it the install is silent while Wednesday links its
+execution floor. With it, the installer prints each step.
 
 Or from source:
 
@@ -128,16 +138,24 @@ declares are used — nothing is guessed and nothing is downloaded.
 ## The terminal
 
 - Fullscreen TUI with a command palette (`ctrl+p`), pager, and per-seat model picks.
-- 25 slash commands: `/connect`, `/model`, `/create`, `/team`, `/templates`,
-  `/tasks`, `/result`, `/events`, `/run`, `/review`, `/update`, `/uninstall`,
-  `/onboard`, and more.
+- 33 slash commands: `/connect`, `/model`, `/create`, `/team`, `/templates`,
+  `/skills`, `/mcp`, `/attach`, `/tasks`, `/result`, `/events`, `/run`,
+  `/review`, `/update`, `/uninstall`, `/onboard`, and more.
 - Named teams with six real roles (architect, planner, coder, tester, reviewer,
   vision), per-role models, and a team policy — shape, repair cap, token and
   dollar budgets, the verification command — stored as plain JSON in
   `~/.wednesday/state/crews.json`.
+- The architect and the planner **ask before they build**: when the request
+  is ambiguous, the run pauses and puts one question to you at a time. Esc
+  skips the question and the run continues.
+- **Images reach the model**: drop a picture on the composer, press `ctrl+v`
+  with a screenshot on the clipboard, or run `/attach <file>`. The path is
+  replaced with `[image: name]` in the prompt — the model sees the picture,
+  not a path it cannot open.
 - `/review accept` stages the last run's change; `/review reject` puts it
   back. The factory never commits on its own.
-- A daily update check that asks before installing anything.
+- A daily update check that asks before installing anything. `/update`
+  streams npm's own output, so an install that is running says so.
 
 ![The Ctrl+P command palette listing every slash command with a one-line description](https://raw.githubusercontent.com/lab1207/Wednesday/master/media/tui-palette.png)
 
@@ -238,6 +256,55 @@ no price is reported as **unpriced** — its tokens still count, and the dollar
 column stays empty rather than showing a made-up figure. A local model shows
 `$0.0000`: the hardware is yours, the tokens are free.
 
+## Your own skills
+
+A skill is a folder with a `SKILL.md` in it — frontmatter with a `name:` and
+a `description:`, and a body that tells a seat how to do something. Drop the
+folder in and Wednesday finds it:
+
+```bash
+~/.wednesday/skills/            # your own skills (all projects)
+<project>/.wednesday/skills/     # the project's skills (travel with the repo)
+```
+
+```text
+/skills                         # what is installed
+/skills path                    # where it is looked for
+/skills install my-skill.skill  # install a package (.skill is a zip)
+/skills remove my-skill         # detach it
+```
+
+An installed package goes through the same audit the factory uses for a
+skill it did not write: an instruction-override directive or a hidden
+instruction **refuses the install** and names what it found. An install
+never overwrites a skill you already have.
+
+A `.skill` file is a zip holding one skill directory. Wednesday reads it
+with no extra dependency, and refuses a package that tries to write outside
+its own folder.
+
+## MCP servers
+
+Attach an MCP server and its tools become callable by the model:
+
+```text
+/mcp                                             # the servers and their state
+/mcp add files stdio npx -y @modelcontextprotocol/server-filesystem "C:\work"
+/mcp add remote http https://example.com/mcp
+/mcp connect files                               # connect now, list the tools
+/mcp disable remote                              # keep it, offer nothing
+/mcp remove files
+```
+
+Wednesday speaks MCP itself (`initialize`, `tools/list`, `tools/call`) over
+stdio and Streamable HTTP, with no extra dependency. The tools ride the
+request as `mcp__<server>__<tool>` and a call runs on the server that owns
+it. A model that is not known to do native tool calls is never offered any.
+
+The registry lives in `~/.wednesday/state/mcp.json`. A server's `env` and
+`headers` can hold a token: the values are stored on your machine and
+**never printed**.
+
 ## Local data
 
 | What | Where |
@@ -245,9 +312,12 @@ column stays empty rather than showing a made-up figure. A local model shows
 | Credentials | `~/.wednesday/.env` |
 | Task history | `~/.wednesday/state/tasks.json` |
 | Event log | `~/.wednesday/state/events.jsonl` |
+| Your skills | `~/.wednesday/skills/` |
+| MCP servers | `~/.wednesday/state/mcp.json` |
 
 Advanced overrides: `WEDNESDAY_STATE_HOME` moves the state directory;
 `HERMES_TASKS_PATH` and `FACTORY_EVENTS_PATH` select individual files.
+`WEDNESDAY_SKILLS_HOME` moves the skills directory.
 `WEDNESDAY_NO_UPDATE_CHECK=1` disables the daily version notice.
 
 ### Ask a team instead of one model

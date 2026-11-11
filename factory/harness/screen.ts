@@ -36,6 +36,10 @@ import {
   restorePasteDraft,
   stripUnresolvedPlaceholders,
 } from './paste-framing'
+import {
+  describeAttachment,
+  type ImageAttachment,
+} from './attachments'
 import { KillRing } from './kill-ring'
 import { UndoStack } from './undo-stack'
 import {
@@ -477,6 +481,19 @@ export interface TerminalKey {
    * still reports 99 ("c") here, so shortcuts stay layout-independent.
    */
   baseCode?: number
+}
+
+/**
+ * What the clipboard held, when the operator pressed Ctrl+V (2026-11-10).
+ *
+ * The screen does not read clipboards -- the harness does, because the OS
+ * differs per platform -- but it owns what happens to the answer.
+ */
+export interface PasteRequest {
+  /** Text to put in the draft (a path the operator copied, for instance). */
+  text?: string
+  /** The image that was attached, if the clipboard held one. */
+  attachment?: ImageAttachment
 }
 
 export interface InputHandlers {
@@ -2184,6 +2201,19 @@ export interface ScreenState {
    */
   queued?: string[]
   /**
+   * IMAGES waiting to go with the next request (2026-11-10).
+   *
+   * The operator drops a picture on the composer or presses Ctrl+V with an
+   * image on the clipboard, and the image has to be somewhere until the
+   * request is sent. This is that somewhere: the screen owns it because the
+   * screen is where the gesture happened, and the harness reads it when the
+   * request goes out.
+   *
+   * The DATA lives here (the bytes, as a data URL) -- a receipt without the
+   * image would be a picture the model cannot see.
+   */
+  pendingAttachments?: ImageAttachment[]
+  /**
    * Mouse text selection, in 1-based FRAME CELLS (the same coordinates SGR
    * mouse reports use): an anchor cell and a cursor cell, inclusive, in
    * reading order. Set by a DRAG — a plain click never selects, it clears —
@@ -3585,6 +3615,13 @@ export class Screen {
   /** Set when Esc asked to interrupt a run (opencode footer promise). */
   requestAbort = false
   /**
+   * The live-run composer's key handler (2026-11-10).
+   *
+   * Kept so the keyboard can be handed to a question mid-run WITHOUT giving
+   * up the stop control. Null when no live-run composer is armed.
+   */
+  private runInputStop: (() => void) | null = null
+  /**
    * The PASTE PAYLOADS behind the labels in the current draft.
    *
    * A paste is untrusted input, and a large one is unreadable in a composer
@@ -4255,7 +4292,30 @@ export class Screen {
       mouse: event => { this.wheelEvent(state, event); this.selectEvent(state, event) },
       out: this.out,
     })
-    return () => { stop(); this.requestAbort = false; this.pendingPalette = false; this.onStop = null }
+    // The live-run keyboard can be HANDED OVER (2026-11-10): a run that pauses
+    // to ask the operator a question needs the line, and the keyboard has one
+    // owner at a time. The handle is kept so the handover can detach the key
+    // handler WITHOUT giving up the stop control -- a paused run is still a
+    // run, and the mouse stop button must keep working.
+    this.runInputStop = stop
+    return () => { stop(); this.runInputStop = null; this.requestAbort = false; this.pendingPalette = false; this.onStop = null }
+  }
+
+  /**
+   * Give the keyboard to somebody else WITHOUT ending the run (2026-11-10).
+   *
+   * The live-run composer owns the key handler while a run is in flight. A
+   * question asked mid-run needs that handler, so it is detached here -- but
+   * the stop control (`onStop`, the mouse stop button) stays armed, because
+   * a run paused on a question is still a run the operator can stop.
+   *
+   * The watch's own stop function still detaches cleanly afterwards; the
+   * attach handle is idempotent.
+   */
+  releaseRunKeyboard(): void {
+    const stop = this.runInputStop
+    this.runInputStop = null
+    stop?.()
   }
 
 
@@ -5782,7 +5842,21 @@ export class Screen {
   readLine(
     state: ScreenState,
     history: string[],
-    options: { ctrlC?: 'exit' | 'cancel'; paste?: 'collapse' | 'raw' } = {},
+    options: {
+      ctrlC?: 'exit' | 'cancel'
+      paste?: 'collapse' | 'raw'
+      escape?: 'clear' | 'cancel'
+      onCancel?: (reason: 'escape' | 'ctrl-c') => void
+      /**
+       * The clipboard read behind Ctrl+V (2026-11-10).
+       *
+       * The screen does not know HOW to read a clipboard -- that is the
+       * harness's business, and the OS differs per platform. The screen
+       * knows WHAT to do with the answer: put the image in the pending
+       * list, show the receipt, and leave the draft alone.
+       */
+      onPasteRequest?: () => Promise<PasteRequest | undefined>
+    } = {},
   ): Promise<string | undefined> {
     return new Promise(resolve => {
       const saved = state.input
@@ -6047,6 +6121,7 @@ export class Screen {
           if (this.copySelectionReceipt(state)) return
           // Inside a prompt, Ctrl+C cancels the prompt.
           if ((options.ctrlC ?? 'exit') === 'cancel') {
+            options.onCancel?.('ctrl-c')
             state.input = saved
             state.cursor = saved.length
             this.render(state)
@@ -6086,7 +6161,16 @@ export class Screen {
         switch (key.name) {
           // Esc clears a draft (opencode composer grammar); while a run is
           // live it asks for an interrupt instead, which the run layer polls.
+          //
+          // `escape: 'cancel'` is the PROMPT grammar (the same one the API
+          // key prompt uses: "enter saves · esc cancels"). A question asked
+          // mid-run is a prompt, not a request: Esc there means "I am not
+          // answering this one", and it must NOT fall through to the
+          // interrupt branch -- that branch only breaks out of the switch and
+          // leaves the reader waiting, which would hang the run on a key
+          // press.
           case 'escape':
+            if (options.escape === 'cancel') { options.onCancel?.('escape'); done(undefined); return }
             if (state.busy) { this.requestAbort = true; break }
             state.selection = null
             // The completion panel goes FIRST: a panel the operator cannot
@@ -6290,6 +6374,63 @@ export class Screen {
           // falls through to insertion instead of being dropped.
           case 'p':
             if (key.ctrl) { this.pendingPalette = true; done(undefined); return }
+            typeText(key.sequence)
+            break
+          // Ctrl+V (2026-11-10, operator report: "im not able add iamges on
+          // contol+v on cammnd tab, or drag and drop iamges to command tab").
+          //
+          // WHAT REACHES THIS BRANCH: a TEXT paste never does. The terminal
+          // intercepts Ctrl+V, reads the clipboard's text and sends it as a
+          // BRACKETED PASTE -- which arrives through `onPaste`, not here.
+          // What arrives here is the terminal forwarding the KEY, which is
+          // what happens when the clipboard holds an IMAGE: there is no text
+          // to paste, so the terminal has nothing to send, and the operator's
+          // keypress used to do nothing at all.
+          //
+          // So the app reads the clipboard ITSELF. The read is asynchronous
+          // (it goes through the OS), and the result lands in the draft when
+          // it arrives -- guarded by `finished`, because a clipboard read
+          // that finishes after the operator pressed Enter must not type
+          // into the NEXT prompt.
+          case 'v':
+            if (key.ctrl) {
+              if (options.onPasteRequest) {
+                void options
+                  .onPasteRequest()
+                  .then(request => {
+                    if (finished || !request) return
+                    if (request.attachment) {
+                      state.pendingAttachments = [
+                        ...(state.pendingAttachments ?? []),
+                        request.attachment,
+                      ]
+                      // The receipt is a TRANSCRIPT row: the operator must
+                      // SEE that the picture is going with the request. A
+                      // silent attachment is an attachment the operator
+                      // cannot trust.
+                      this.push(state, {
+                        text: `▣ ${describeAttachment(request.attachment)}`,
+                        tone: 'dim',
+                      })
+                    }
+                    if (request.text) insertAtomic(request.text)
+                    this.render(state)
+                  })
+                  .catch((error: unknown) => {
+                    if (finished) return
+                    this.push(state, {
+                      text: `✗ ${
+                        error instanceof Error
+                          ? error.message
+                          : 'the clipboard could not be read'
+                      }`,
+                      tone: 'dim',
+                    })
+                    this.render(state)
+                  })
+              }
+              break
+            }
             typeText(key.sequence)
             break
           // Ctrl+F opens the TRANSCRIPT SEARCH. The draft is untouched: the

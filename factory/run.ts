@@ -35,6 +35,7 @@ import { redactSensitiveText } from './security/redaction'
 import {
   DshSkillAdapter,
   EccSkillAdapter,
+  ExternalSkillAdapter,
   BuiltinSkillAdapter,
   GstackSkillAdapter,
   OdesignSkillAdapter,
@@ -261,7 +262,16 @@ async function runWithContext(
                       new CompositeSkillSource(
                         new CompositeSkillSource(
                           new DshSkillAdapter(ctx),
-                          new EccSkillAdapter(),
+                          // ECC playbooks, then THE OPERATOR'S OWN SKILLS
+                          // (2026-11-11). The external adapter reads the
+                          // skill folders the operator installed or dropped
+                          // into the project; the composite asks every
+                          // branch for a name, so the branch that won the
+                          // listing is the branch that answers.
+                          new CompositeSkillSource(
+                            new EccSkillAdapter(),
+                            new ExternalSkillAdapter(),
+                          ),
                         ),
                         new BuiltinSkillAdapter(),
                       ),

@@ -21,6 +21,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// THE OPERATOR'S LIVE STATE MUST NOT REACH THIS TEST (2026-11-10).
+//
+// This import comes FIRST on purpose: it sets the state home before
+// `factory/paths.ts` is evaluated (ESM evaluates imports in source order),
+// so the test reads its own temp state instead of the operator's real
+// `~/.wednesday/state`. With a team selected on the machine, `/team` printed
+// that team's policy instead of saying there is no team, and the suite failed
+// for a reason that had nothing to do with the code under test.
+//
+// The same trap bit `chat-tui-test.ts`: the active crew overrode the route the
+// test pinned, and the chat went to a hosted model that answered "not a valid
+// model id" instead of the scripted local server.
+//
+// A test that reads the operator's real state is not a test.
+import './test-state-home.js'
+
 import { PersistentFactoryEventBus } from '../events/index.js'
 import { Screen, initialState } from './screen.js'
 import { parseFlags, replLoop, retryHint, screenStatusContext, PALETTE, HELP_COMMANDS, type ReplUi } from './harness.js'
@@ -282,7 +298,13 @@ async function main(): Promise<void> {
   //    Note the OpenRouter key below is PRESENT. That is the exact rig that
   //    failed: the old gate checked OpenRouter, found it, and waved the doomed
   //    NVIDIA run through the approval card.
-  await withEnv({ FACTORY_LLM_PROVIDER: 'nvidia', NVIDIA_API_KEY: undefined, OPENROUTER_API_KEY: ready.OPENROUTER_API_KEY, DSH_LLM_MODEL: ready.DSH_LLM_MODEL }, async () => {
+  //
+  //    FACTORY_EXECUTION_MODE is cleared for this block (2026-11-10): the
+  //    deterministic provider needs no API key, so in that mode the NVIDIA
+  //    route is NOT impossible and the card IS correct -- the assertion
+  //    below is about a route that cannot start, and the mode decides
+  //    whether it can. The block sets its own world; it must own it whole.
+  await withEnv({ FACTORY_LLM_PROVIDER: 'nvidia', NVIDIA_API_KEY: undefined, OPENROUTER_API_KEY: ready.OPENROUTER_API_KEY, DSH_LLM_MODEL: ready.DSH_LLM_MODEL, FACTORY_EXECUTION_MODE: undefined }, async () => {
     const rec = await drive(['fix the login leak'])
     assert.equal(rec.approved, 0, 'no approval card is offered for an impossible run')
     assert.ok(rec.errors.some(e => /NVIDIA key missing/.test(e)), 'the blocker names the real route')

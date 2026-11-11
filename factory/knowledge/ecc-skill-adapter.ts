@@ -165,10 +165,25 @@ export class CompositeSkillSource implements SkillSource {
     return [...first, ...second.filter(skill => !seen.has(skill.name))]
   }
 
+  /**
+   * Load a skill by id.
+   *
+   * BOTH branches are asked, primary first. The old rule routed by a
+   * hardcoded prefix (`ecc:` -> the secondary branch), which only worked for
+   * the INNERMOST composite: at the outer levels the secondary branch is a
+   * different chain, so every ECC skill was LISTED and then returned
+   * `undefined` when the builder asked for its content (proved 2026-11-11:
+   * 286 skills listed, none loadable through the service's chain).
+   *
+   * The branches are asked in LIST order instead, so the branch that won the
+   * name in `list()` is the branch that answers in `load()`. A branch that
+   * does not know the name returns `undefined`, which is how "I do not have
+   * it" is spelled everywhere in this file.
+   */
   async load(name: string, workspace?: string): Promise<KnowledgeSkill | undefined> {
-    if (name.startsWith(ECC_SKILL_PREFIX)) {
-      return this.secondary.load(name, workspace)
-    }
-    return this.primary.load(name, workspace)
+    return (
+      (await this.primary.load(name, workspace)) ??
+      (await this.secondary.load(name, workspace))
+    )
   }
 }

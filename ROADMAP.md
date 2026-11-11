@@ -4,17 +4,29 @@ Wednesday is free and open source (Apache 2.0). This is where the project is
 going and where help is most useful. Beta means the terminal is the product
 today; everything below is actively being worked on, not a promise of dates.
 
-## Now - beta `0.2.0-beta.5`
+## Now - beta `0.2.0-beta.6`
 
 Shipped and in daily use:
 
 - Terminal harness: plan → preview → approve → build → real tests → repair →
   review → receipt.
-- Fullscreen TUI, command palette, 25 slash commands, pager.
+- Fullscreen TUI, command palette, 33 slash commands, pager.
 - `/connect`: OpenRouter, NVIDIA NIM, any OpenAI-compatible endpoint, local
   servers, tunnels, and the local proxy.
 - Named teams, engineering roles, per-seat model picks, repair budgets.
 - Local-first storage: keys in `~/.wednesday/.env`, state in `~/.wednesday/state/`.
+- The team **asks**: an ambiguous request pauses the run and puts one question
+  to the operator at a time (Esc skips it, the run continues).
+- **Images reach the model**: drop a picture on the composer, `ctrl+v` with a
+  screenshot on the clipboard, or `/attach <file>` -- the picture rides the
+  request, not a path the model cannot open.
+- **The operator's own skills**: drop a folder with a `SKILL.md` into
+  `~/.wednesday/skills/` (or the project's `.wednesday/skills/`), or install a
+  `.skill` package through `/skills install` -- behind the same audit that
+  vets the factory's own skills.
+- **The operator's own MCP servers**: `/mcp add` attaches one over stdio or
+  Streamable HTTP, `/mcp connect` lists its tools, and the model calls them as
+  `mcp__<server>__<tool>`.
 - Security hardening: central redaction, shell-free fenced tools, and a
   packaging-surface test in CI-able form.
 - The operator's six-seat roster — UI/UX, architecture, coding, autocomplete,

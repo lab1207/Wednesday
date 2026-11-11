@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { describeNpmFailure, resolveNpm, runNpm, type NpmRunResult } from './npm-command.js'
 
 // Consent-gated self-update for `/update` (2026-11-01, operator request:
 // "user said yes then it updates, like opencode").
@@ -15,6 +15,33 @@ import { spawnSync } from 'node:child_process'
 //  - nothing here runs without the operator's explicit yes at the call site;
 //  - the post-install verify re-asks the registry for the pinned version and
 //    compares, so a half-written install is reported as failed.
+//
+// WHY THIS FILE CHANGED (operator report, 2026-11-09):
+//
+//   "i run this /update command then it ask you are sure install update yes
+//    or no i select yes then, this i see ... 'update installed failed: npm
+//    exited with signal - manual: npm i -g @lab1207/wednesday@0.2.0-beta.5'"
+//
+// Two separate defects, both invisible before:
+//
+//  1. THE UPDATE NEVER RAN ON WINDOWS. The old code spawned `npm` with
+//     `shell: false`. On Windows `npm` is `npm.cmd`, a BATCH file, and Node
+//     cannot execute a batch file without a shell -- the spawn died with
+//     ENOENT and `status` was null. The old message then read
+//     `npm exited with ${status ?? 'signal'}`, which printed the literal
+//     word "signal" and threw the real reason away. The operator was told
+//     the install was killed by a signal that never existed.
+//
+//  2. THE INSTALL WAS SILENT. `spawnSync` blocks the event loop, so the
+//     terminal froze for the whole install with npm's output captured and
+//     never shown. "Nothing show means what install what now" is exactly
+//     that: a frozen screen with no line saying what is happening.
+//
+// The fix: npm is invoked through `npm-command.ts` (node + npm-cli.js, no
+// shell, works on every platform), the run is ASYNC so the UI keeps
+// painting, every line npm prints is forwarded to the operator, and a
+// failure names the real reason -- the OS error, the signal, or npm's own
+// message -- never a placeholder.
 
 export const UPDATE_PACKAGE = '@lab1207/wednesday'
 
@@ -25,9 +52,17 @@ export function isInstallableVersion(version: string): boolean {
   return VERSION_RE.test(version)
 }
 
-/** The exact command shown to / printed for the operator. */
+/**
+ * The exact command shown to / printed for the operator.
+ *
+ * WHY `--foreground-scripts`: npm hides lifecycle-script output by default
+ * (`npm config get foreground-scripts` -> false), so a plain install is
+ * SILENT during the postinstall -- the step that links the execution floor.
+ * The flag makes the install say what it is doing, which is the whole point
+ * of the operator's "show me what is installing and what is next" ask.
+ */
 export function updateCommandLine(version: string): string {
-  return `npm i -g ${UPDATE_PACKAGE}@${version}`
+  return `npm i -g ${UPDATE_PACKAGE}@${version} --foreground-scripts`
 }
 
 /**
@@ -45,46 +80,89 @@ export interface RunResult {
   stdout: string
   stderr: string
 }
-export type RunFn = (command: string, args: string[]) => RunResult
 
-/** Real runner: npm as an arg array, no shell, bounded in time. */
-export const npmRun: RunFn = (command, args) => {
-  const done = spawnSync(command, args, {
-    encoding: 'utf8',
-    timeout: 240_000,
-    windowsHide: true,
-    shell: false,
+/**
+ * The seam the tests drive.
+ *
+ * WHY IT TAKES ONLY THE ARGS: the executable is resolved by `npm-command.ts`
+ * (node + npm-cli.js on Windows), and a test must not have to know which
+ * machine it runs on. What the test DOES pin is the ARG ARRAY -- that the
+ * install spec is the exact pinned version and that no shell is involved.
+ */
+export type RunFn = (
+  args: string[],
+  hooks?: { onOutput?: (line: string) => void },
+) => Promise<NpmRunResult>
+
+/** Real runner: npm through the shared resolver, async, streaming. */
+export const npmRun: RunFn = async (args, hooks) =>
+  runNpm(args, {
+    onOutput: hooks?.onOutput,
+    timeoutMs: 240_000,
   })
-  return { status: done.status, stdout: done.stdout ?? '', stderr: done.stderr ?? '' }
-}
 
 export type InstallOutcome =
   | { ok: true; installed: string }
   | { ok: false; stage: 'version' | 'install' | 'verify'; detail: string }
 
-export function installUpdate(deps: { version: string; run?: RunFn }): InstallOutcome {
+/** What the operator is told while the install runs. */
+export interface UpdateProgress {
+  /** A short line: what is happening right now. */
+  step?: (text: string) => void
+  /** One line of npm's own output, exactly as npm printed it. */
+  output?: (line: string) => void
+}
+
+export async function installUpdate(
+  deps: { version: string; run?: RunFn; progress?: UpdateProgress },
+): Promise<InstallOutcome> {
   const run = deps.run ?? npmRun
   const version = deps.version.trim()
   if (!isInstallableVersion(version)) {
     return { ok: false, stage: 'version', detail: `refusing to install malformed version "${deps.version}"` }
   }
   const spec = `${UPDATE_PACKAGE}@${version}`
-  const install = run('npm', ['install', '-g', spec, '--no-fund', '--no-audit'])
-  if (install.status !== 0) {
+  deps.progress?.step(`installing ${spec} from the npm registry — this can take a minute…`)
+  const install = await run(
+    ['install', '-g', spec, '--no-fund', '--no-audit', '--foreground-scripts'],
+    { onOutput: deps.progress?.output },
+  )
+  if (!install.ok) {
     return {
       ok: false,
       stage: 'install',
-      detail: (install.stderr || install.stdout).trim().slice(0, 400) || `npm exited with ${install.status ?? 'signal'}`,
+      detail: describeNpmFailure(install),
     }
   }
   // Verify the pinned version really is what the registry serves now.
-  const view = run('npm', ['view', spec, 'version'])
-  if (view.status !== 0 || view.stdout.trim() !== version) {
+  deps.progress?.step(`verifying ${spec} is what the registry serves…`)
+  const view = await run(['view', spec, 'version'])
+  if (!view.ok || view.stdout.trim() !== version) {
     return {
       ok: false,
       stage: 'verify',
-      detail: `install ran but registry check said "${view.stdout.trim() || view.stderr.trim().slice(0, 200)}" (expected ${version})`,
+      detail: `install ran but the registry check said "${view.stdout.trim() || describeNpmFailure(view)}" (expected ${version})`,
     }
   }
   return { ok: true, installed: version }
+}
+
+/**
+ * Is npm reachable at all on this machine?
+ *
+ * WHY THIS IS SEPARATE: "npm is not installed" and "npm is installed but the
+ * install failed" are different answers, and the operator needs the first one
+ * before the second one can even be attempted. The old code could not tell
+ * them apart because it never checked.
+ */
+export function npmAvailability(): { available: boolean; detail: string } {
+  const invocation = resolveNpm()
+  if (!invocation) {
+    return {
+      available: false,
+      detail:
+        'npm could not be located on this machine (expected npm-cli.js beside node, or npm on PATH).',
+    }
+  }
+  return { available: true, detail: invocation.label }
 }

@@ -32,3 +32,29 @@ export function runtimeRoot(): string | undefined {
 export const STATE_HOME = resolve(process.env.WEDNESDAY_STATE_HOME ?? join(homedir(), '.wednesday', 'state'))
 export const TASKS_PATH = resolve(process.env.HERMES_TASKS_PATH ?? join(STATE_HOME, 'tasks.json'))
 export const EVENTS_PATH = resolve(process.env.FACTORY_EVENTS_PATH ?? join(STATE_HOME, 'events.jsonl'))
+
+/**
+ * WHERE OPERATOR-INSTALLED SKILLS LIVE (2026-11-11).
+ *
+ * The external skills surface: a skill directory the operator drops in and
+ * Wednesday discovers on the next run. It sits beside the state home, NOT
+ * inside it, because a skill is a thing the operator OWNS (they edit it, they
+ * version it, they share it) and the state home is runtime scratch that gets
+ * migrated and cleaned.
+ *
+ * `WEDNESDAY_SKILLS_HOME` overrides it, for a portable install and for the
+ * tests (which must never touch the operator's real home).
+ */
+export const SKILLS_HOME = resolve(
+  process.env.WEDNESDAY_SKILLS_HOME ?? join(homedir(), '.wednesday', 'skills'),
+)
+
+/**
+ * The PROJECT's own skills: `<workspace>/.wednesday/skills/`.
+ *
+ * A skill that belongs to one repository lives with that repository, so it
+ * travels with a clone and a teammate gets it without installing anything.
+ */
+export function workspaceSkillsHome(workspace: string): string {
+  return join(resolve(workspace), '.wednesday', 'skills')
+}

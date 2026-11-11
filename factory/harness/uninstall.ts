@@ -18,12 +18,12 @@
  */
 import { existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
-import { spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 import { CONFIG_PATH } from './config'
 import { redactSensitiveText } from '../security/redaction'
 import { STATE_HOME } from '../paths'
+import { describeNpmFailure, runNpmSync } from './npm-command.js'
 
 export interface UninstallUi {
   note(text: string): void
@@ -93,12 +93,18 @@ export async function runUninstall(
   }
   const removed: string[] = []
   for (const target of plan.targets) {
+    // WHY THE PER-PATH LINES: the operator asked what is happening while it
+    // happens. A silent delete of a home directory is the one operation where
+    // silence is most alarming, so each removal announces itself before and
+    // after.
+    ui.note(`removing ${target}…`)
     await rm(target, { recursive: true, force: true })
     removed.push(target)
+    ui.note(`removed ${target}`)
   }
   ui.note(`removed:\n${removed.map(target => `  ${target}`).join('\n')}`)
   ui.note(`to remove the installed package too, run:\n  ${PACKAGE_REMOVE_CMD}`)
-  ui.note('your projects were not touched. Reinstall anytime: npm i -g @lab1207/wednesday')
+  ui.note('your projects were not touched. Reinstall anytime: npm i -g @lab1207/wednesday --foreground-scripts')
   return { confirmed: true, removed, kept: [] }
 }
 
@@ -122,9 +128,22 @@ export async function uninstallCli(args: string[]): Promise<void> {
     readline.close()
   }
   if (removePackage) {
+    // WHY THE PROGRESS LINES (operator report, 2026-11-09): "install process
+    // via terminal nothing show means what install what now? ... also for
+    // uninstall". The old path printed one line and then went SILENT while
+    // npm worked, and on Windows it was worse than silent: `npm` is npm.cmd,
+    // a batch file, and the old `spawnSync('npm', ...)` could not run it
+    // without a shell -- so the package was never removed and the error was
+    // an empty "npm rm failed (exit null)".
     console.log(`\nrunning: ${PACKAGE_REMOVE_CMD}`)
-    const done = spawnSync('npm', ['rm', '-g', PACKAGE_NAME], { encoding: 'utf8', windowsHide: true })
-    if (done.status === 0) console.log('package removed.')
-    else console.error(`npm rm failed (exit ${done.status}): ${redactSensitiveText((done.stderr ?? '').trim())}`)
+    console.log('removing the global npm package @lab1207/wednesday — this can take a minute…')
+    const done = runNpmSync(['rm', '-g', PACKAGE_NAME], { timeoutMs: 240_000 })
+    if (done.ok) {
+      console.log('package removed.')
+    } else {
+      console.error(
+        `npm rm failed: ${redactSensitiveText(describeNpmFailure(done))} — run it by hand: ${PACKAGE_REMOVE_CMD}`,
+      )
+    }
   }
 }

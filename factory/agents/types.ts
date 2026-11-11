@@ -6,6 +6,10 @@ import type {
   AgentActivity,
 } from '../events/types'
 
+import type {
+  ClarificationAnswer,
+} from './clarification'
+
 export type AgentRoleId =
   | 'architect'
   | 'planner'
@@ -40,6 +44,16 @@ export interface AgentContext {
    * same output it always did.
    */
   reportActivity?: (activity: AgentActivity) => void
+
+  /**
+   * The operator's answers to the questions this seat asked (2026-11-10).
+   *
+   * The architect and the planner decide the DIRECTION, so they are the seats
+   * that may ask. The run pauses, the operator answers, and the seat runs
+   * AGAIN with the answers here -- without them the seat would be asked the
+   * same question twice, which is the "it just goes" behaviour in a new coat.
+   */
+  clarifications?: ClarificationAnswer[]
 }
 
 export interface AgentOutput {
@@ -52,6 +66,14 @@ export interface AgentOutput {
   blockingIssues?: string[]
   review?: ReviewResult
 engineeringResult?: EngineeringResult
+  /**
+   * The exchange that produced this output (2026-11-10).
+   *
+   * The questions the seat asked and the answers the operator gave. It rides
+   * in the output so the record of a run says what the direction was, and not
+   * only what was built.
+   */
+  clarifications?: ClarificationAnswer[]
 }
 
 export type ReviewVerdict =

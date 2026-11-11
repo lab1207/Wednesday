@@ -29,6 +29,7 @@ import {
 
 import { AgentRegistry } from './agents'
 import { ANALYSIS_ROLES } from './agents/roles'
+import type { Clarifier } from './agents/clarification'
 import { FactoryExecutor } from './executor'
 import { VerificationEngine } from './verification'
 
@@ -49,6 +50,7 @@ import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import {
   DshSkillAdapter,
   EccSkillAdapter,
+  ExternalSkillAdapter,
   BuiltinSkillAdapter,
   GstackSkillAdapter,
   OdesignSkillAdapter,
@@ -108,6 +110,14 @@ export interface FactoryService {
     task: EngineeringTask,
     options?: {
       signal?: AbortSignal
+      /**
+       * How the run asks the operator a question (2026-11-10).
+       *
+       * The architect and the planner may pause and ask; this is how the
+       * question reaches the operator. Absent = the seats cannot ask, and the
+       * run behaves exactly as it did before.
+       */
+      clarify?: Clarifier
     },
   ): Promise<EngineeringResult>
 
@@ -336,7 +346,16 @@ export async function createFactoryService():
                       new CompositeSkillSource(
                         new CompositeSkillSource(
                           new DshSkillAdapter(ctx),
-                          new EccSkillAdapter(),
+                          // ECC playbooks, then THE OPERATOR'S OWN SKILLS
+                          // (2026-11-11). The external adapter reads the
+                          // skill folders the operator installed or dropped
+                          // into the project; the composite asks every
+                          // branch for a name, so the branch that won the
+                          // listing is the branch that answers.
+                          new CompositeSkillSource(
+                            new EccSkillAdapter(),
+                            new ExternalSkillAdapter(),
+                          ),
                         ),
                         new BuiltinSkillAdapter(),
                       ),
@@ -493,6 +512,7 @@ export async function createFactoryService():
       task: EngineeringTask,
       options: {
         signal?: AbortSignal
+        clarify?: Clarifier
       } = {},
     ): Promise<EngineeringResult> {
       // Laya guard pre-pass (2026-09-23, optional, fail-open): when the
@@ -552,6 +572,12 @@ export async function createFactoryService():
           {
             signal:
               options.signal,
+
+            // The seats that decide the direction may ask the operator
+            // (2026-11-10). The harness owns the question; the service only
+            // carries it.
+            clarifier:
+              options.clarify,
           },
         )
 

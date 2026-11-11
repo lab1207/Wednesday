@@ -20,6 +20,7 @@ import type {
 
 import { TASKS_PATH } from '../paths'
 import { migrateLegacyState } from '../state-migration'
+import type { Clarifier } from '../agents/clarification'
 export const TASKS_FILE = TASKS_PATH
 
 /**
@@ -187,6 +188,14 @@ export async function runHermesTask(
   hermesTaskId: string,
   options: {
     signal?: AbortSignal
+    /**
+     * How the run asks the operator a question (2026-11-10).
+     *
+     * The harness runs the Factory IN-PROCESS, so a question from the
+     * architect or the planner can reach the operator's screen without a
+     * message bus, a socket, or a file. This is that channel.
+     */
+    clarify?: Clarifier
   } = {},
 ): Promise<{
   status: HermesTaskStatus
@@ -282,6 +291,12 @@ export async function runHermesTask(
         {
           signal:
             controller.signal,
+
+          // The question channel (2026-11-10): the architect and the planner
+          // may ask the operator, and the harness owns the screen they ask
+          // on.
+          clarify:
+            options.clarify,
         },
       )
 

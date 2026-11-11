@@ -299,7 +299,7 @@ export async function checkForUpdates(deps: UpdateCheckDeps): Promise<string | n
   // One good message, used by the stream line AND the home-screen banner:
   // both version names plus the verb to run. The install command pins the
   // EXACT remote version, not the moving tag.
-  return `Update available: ${found.current} → ${found.remote} — type /update to install it (or: npm i -g @lab1207/wednesday@${found.remote})`
+  return `Update available: ${found.current} → ${found.remote} — type /update to install it (or: npm i -g @lab1207/wednesday@${found.remote} --foreground-scripts)`
 }
 
 /**
@@ -316,7 +316,7 @@ export function updateStatusLines(status: UpdateStatus, install: LocalInstall = 
     case 'available':
       return [
         `wednesday ${status.current} → ${status.remote} is available (npm channel "${status.channel}")`,
-        `install: npm i -g @lab1207/wednesday@${status.remote}   (exact pinned version, registry.npmjs.org over HTTPS)`,
+        `install: npm i -g @lab1207/wednesday@${status.remote} --foreground-scripts   (exact pinned version, registry.npmjs.org over HTTPS)`,
         ...(linkNote ? [`note: ${linkNote} installing replaces the link with a published copy.`] : []),
       ]
     case 'current':

@@ -22,6 +22,14 @@ import {
 } from '../agents/text-list'
 
 import {
+  collectSeatText,
+  MAX_CLARIFICATION_ROUNDS,
+  parseClarificationQuestions,
+  type ClarificationAnswer,
+  type Clarifier,
+} from '../agents/clarification'
+
+import {
   handoffFilesChanged,
   normalizeAgentOutput,
 } from '../agents/handoff'
@@ -292,6 +300,13 @@ export interface FactoryOrchestratorOptions {
     prompt: string,
     images?: string[],
   ) => Promise<string>
+  /**
+   * How the run asks the operator a question (2026-11-10).
+   *
+   * Injected so the harness can put the question on the operator's screen and
+   * so a test can answer it without a screen. Absent = the seats cannot ask.
+   */
+  clarifier?: Clarifier
 }
 
 export interface OrchestratorRunOptions {
@@ -301,6 +316,12 @@ export interface OrchestratorRunOptions {
    * executor on abort. In-flight model calls are not cancelled mid-flight.
    */
   signal?: AbortSignal
+  /**
+   * How THIS run asks the operator a question (2026-11-10). Wins over the
+   * constructor's clarifier: one session's question belongs to that session's
+   * screen, not to the service.
+   */
+  clarifier?: Clarifier
 }
 
 export interface RunBudgetLimits {
@@ -622,6 +643,16 @@ export class FactoryOrchestrator {
       images?: string[],
     ) => Promise<string>
 
+  /**
+   * How the run asks the operator a question (2026-11-10).
+   *
+   * Absent = the seats cannot ask, and the run behaves exactly as it did
+   * before. Present = the architect and the planner may pause the run and
+   * ask, one question at a time.
+   */
+  private readonly clarifier?:
+    Clarifier
+
   private readonly knowledgeBuilder?:
     KnowledgeBuilder
 
@@ -670,6 +701,9 @@ export class FactoryOrchestrator {
 
     this.relayProber =
       options.relayProber
+
+    this.clarifier =
+      options.clarifier
 
     this.eventSink =
       options.eventSink
@@ -913,11 +947,161 @@ export class FactoryOrchestrator {
     }
   }
 
+  /**
+   * THE PAUSE: ask the operator, then run the seat again with the answers.
+   *
+   * WHY THE SEAT RUNS AGAIN: a seat is one-shot -- it answers once and the
+   * answer is done. The question it asked was asked BEFORE it knew the
+   * answer, so its analysis was written without it. Re-running the seat with
+   * the answers in its prompt is what turns "I asked" into "I asked and then
+   * did the work the answer pointed at". The first output is replaced, not
+   * appended to: it was written against a direction nobody had chosen yet.
+   *
+   * WHY THE ROUNDS ARE CAPPED: a seat that asks again after the answers is
+   * either missing something real (worth one more round) or looping (not
+   * worth more than two). The cap is what stops a small model from turning
+   * one request into an interrogation.
+   *
+   * WHY A DECLINED QUESTION IS NOT A FAILURE: the operator may have nothing
+   * to say about a detail they do not care about. The seat keeps the analysis
+   * it already produced, the exchange is recorded as unanswered, and the run
+   * continues. What the operator CANNOT do is leave a question hanging: the
+   * seat is re-run either way.
+   */
+  private async askTheOperator(
+    params: {
+      role: {
+        id: AgentRoleId
+        purpose: string
+        buildPrompt(
+          context: AgentContext,
+        ): string
+      }
+      runner: {
+        run(
+          role: {
+            id: AgentRoleId
+            purpose: string
+            buildPrompt(
+              context: AgentContext,
+            ): string
+          },
+          context: AgentContext,
+        ): Promise<AgentOutput>
+      }
+      context: AgentContext
+      output: AgentOutput
+      clarifier: Clarifier
+      signal?: AbortSignal
+    },
+  ): Promise<AgentOutput> {
+    const answers: ClarificationAnswer[] = []
+    let output = params.output
+
+    for (
+      let round = 0;
+      round < MAX_CLARIFICATION_ROUNDS;
+      round += 1
+    ) {
+      const questions =
+        parseClarificationQuestions(
+          collectSeatText(output),
+        )
+
+      if (questions.length === 0) break
+
+      let unanswered = false
+
+      for (const question of questions) {
+        if (params.signal?.aborted === true) {
+          unanswered = true
+          break
+        }
+
+        let answer: string | undefined
+        try {
+          answer = await params.clarifier(question)
+        } catch {
+          // A question that could not be asked must not take the run down:
+          // the seat keeps the analysis it already produced.
+          unanswered = true
+          break
+        }
+
+        if (answer === undefined) {
+          unanswered = true
+          break
+        }
+
+        const trimmed = answer.trim()
+        if (!trimmed) {
+          unanswered = true
+          break
+        }
+
+        // The operator stopped the run while answering: the answer is kept,
+        // but there is no point running the seat again.
+        if (params.signal?.aborted === true) {
+          answers.push(
+            {
+              question,
+              answer: trimmed,
+            },
+          )
+          unanswered = true
+          break
+        }
+
+        answers.push(
+          {
+            question,
+            answer: trimmed,
+          },
+        )
+      }
+
+      if (unanswered) break
+      if (answers.length === 0) break
+
+      const nextContext: AgentContext = {
+        ...params.context,
+        clarifications: [...answers],
+      }
+
+      try {
+        output = await params.runner.run(
+          params.role,
+          nextContext,
+        )
+      } catch {
+        // A re-run that fails must not lose the answers: the seat's first
+        // output (the one that carried the questions) is still evidence, and
+        // the exchange is still recorded.
+        break
+      }
+    }
+
+    if (answers.length > 0) {
+      output = {
+        ...output,
+        clarifications: answers,
+      }
+    }
+
+    return output
+  }
+
   async run(
     task: EngineeringTask,
     options: OrchestratorRunOptions = {},
   ): Promise<OrchestrationResult> {
     const signal = options.signal
+    // The seats that decide the DIRECTION may ask the operator (2026-11-10).
+    // The run's own clarifier wins: one session's question belongs to that
+    // session's screen, not to the service that happens to own the runner.
+    const clarifier =
+      options.clarifier ??
+      this.clarifier
 
     // V1.7 hardening — budgets bound repair work, not completed work: the
     // baseline is captured here, every repair retry checks spend since.
@@ -1534,6 +1718,42 @@ export class FactoryOrchestrator {
               }
               throw error
             }
+          }
+
+          // THE ARCHITECT AND THE PLANNER ASK (2026-11-10, operator report:
+          // "the stage architect and planner don't ask question they just
+          // go? ... they must ask relevant question related the task then
+          // next and so on").
+          //
+          // The two seats that decide the DIRECTION are the ones that may not
+          // guess: the operator is the one who knows what they are looking
+          // for. The seat writes its questions under `QUESTIONS:`, the run
+          // pauses, the operator answers ONE question at a time, and the seat
+          // runs AGAIN with the answers in its prompt.
+          //
+          // Lanes never ask: a lane is one of several parallel attempts, and
+          // a question there would have no single answer to wait for.
+          if (
+            clarifier &&
+            !lane &&
+            (
+              roleId ===
+                'architect' ||
+              roleId ===
+                'planner'
+            )
+          ) {
+            output =
+              await this.askTheOperator(
+                {
+                  role,
+                  runner,
+                  context,
+                  output,
+                  clarifier,
+                  signal,
+                },
+              )
           }
 
           if (

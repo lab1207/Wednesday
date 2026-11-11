@@ -5,6 +5,7 @@ import type {
 } from './types'
 
 import { normalizeHandoff } from './handoff'
+import { buildClarificationBlock } from './clarification'
 
 function baseTask(context: AgentContext): string {
   const { task } = context
@@ -109,11 +110,18 @@ function createRole(
     id,
     purpose,
     buildPrompt(context) {
+      // The operator's answers (2026-11-10) sit right under the task, not at
+      // the end: they are the HEAD of the prompt, so a trim keeps them and a
+      // model reads them before the instructions that tell it what to build.
+      const answers = buildClarificationBlock(
+        context.clarifications ?? [],
+      )
       return [
         `You are the ${id} agent.`,
         `Your purpose: ${purpose}`,
         '',
         baseTask(context),
+        ...(answers ? ['', answers] : []),
         '',
         'Previous agent outputs:',
         previousOutputs(context),
@@ -180,12 +188,19 @@ export const architectAgent = createRole(
     '- THE DESIGN: what changes, file by file, with the reason.',
     '- OUT OF SCOPE: what you deliberately did not touch.',
     '- RISK: the most likely failure and the signal that reveals it.',
+    '- QUESTIONS: your open questions, one per line. Or the single word: none.',
     '',
     'RULES:',
     '- No code longer than a signature or a type shape. You are not the coder.',
     '- Never name a file, function, or library you did not see in the workspace.',
-    '- If the request is ambiguous, choose the reading that needs the fewest',
-    '  assumptions and say in one line which reading you chose.',
+    '- If the request is ambiguous, or you cannot tell what the operator wants,',
+    '  ASK. Do not guess, and do not pick "the most likely reading" -- the',
+    '  operator is the one who decides the direction. Put the question under',
+    '  QUESTIONS: and write your best analysis around it; the operator answers',
+    '  and you are given the answer before the work starts.',
+    '- Ask about the DIRECTION, not about what you can read in the workspace.',
+    '  A good question is one whose answer changes what gets built.',
+    '- At most 3 questions. If you have nothing to ask, write "QUESTIONS: none".',
     '- If the request is smaller than your design, cut the design down to the',
     '  request.',
   ].join('\n'),
@@ -213,6 +228,7 @@ export const plannerAgent = createRole(
     '- COVERAGE: each acceptance criterion -> the step that satisfies it.',
     '- NOT DOING: what is out of scope.',
     '- FIRST STEP: the one edit to make first, spelled out.',
+    '- QUESTIONS: your open questions, one per line. Or the single word: none.',
     '',
     'RULES:',
     '- Every step names a real file path.',
@@ -220,6 +236,11 @@ export const plannerAgent = createRole(
     '  and WHAT.',
     '- Do not plan a refactor the task did not ask for.',
     '- If the plan needs more than 8 steps, say so and cut to the 8 that matter.',
+    '- If the architecture leaves the ORDER or the SCOPE unclear, ASK. Put the',
+    '  question under QUESTIONS: and write your best plan around it. The',
+    '  operator answers, and you are given the answer before the work starts.',
+    '- Do not guess what the operator wants. The operator decides the direction.',
+    '- At most 3 questions. If you have nothing to ask, write "QUESTIONS: none".',
   ].join('\n'),
 )
 

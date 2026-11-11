@@ -12,6 +12,14 @@ import type { EngineeringTask, EngineeringResult } from '../contracts'
 import { installFatalGuard, installInterrupt } from './interrupt'
 import { analyzeRepositoryCached } from '../openhands/connector'
 import { loadStore, runHermesTask, submitTask } from '../hermes/store'
+import type { Clarifier } from '../agents/clarification'
+import {
+  collectImageAttachments,
+  describeAttachment,
+  readClipboardImage,
+  type ImageAttachment,
+} from './attachments'
+import { mcpChatToolOptions } from '../mcp/tools'
 import { loadCrews, activeCrew, applyCrew, crewMeterName, crewSeatModel, crewSeatSummary, setActiveCrew, updateCrew, type Crew } from './crew-store'
 import {
   estimateSeatCostUsd,
@@ -102,7 +110,10 @@ export const HELP_COMMANDS: Array<[string, string]> = [
   ['/agents', 'crew profile · seat per role'],
   ['/crew', 'list · select · edit · delete teams'],
   ['/team', 'how the team works: shape · repairs · budget · test'],
+  ['/skills', 'your own skills · install a .skill package · where they live'],
+  ['/mcp', 'MCP servers · attach · connect · list their tools'],
   ['/templates', 'save · list · run a request again'],
+  ['/attach [file]', 'attach an image (clipboard, or a file) to the next request'],
   ['/model', 'every model from every connection — assign it a role'],
   ['/status', 'route · model · pool · shape'],
   ['/doctor', 'readiness check (read-only)'],
@@ -188,9 +199,9 @@ export const COMMAND_SPECS: CommandSpec[] = HELP_COMMANDS
  * shows.
  */
 export const HELP_GROUPS: HelpGroup[] = [
-  { title: 'Composer', names: ['<request>', '/'] },
+  { title: 'Composer', names: ['<request>', '/', '/attach [file]'] },
   { title: 'Session', names: ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q', '/history'] },
-  { title: 'Setup', names: ['/connect', '/create [name]', '/model', '/agents', '/crew', '/team', '/templates', '/onboard', '/proof'] },
+  { title: 'Setup', names: ['/connect', '/create [name]', '/model', '/agents', '/crew', '/team', '/templates', '/skills', '/mcp', '/onboard', '/proof'] },
   { title: 'Work', names: ['/tasks', '/result <id>', '/events <id>', '/run <id>', '/review', '/health'] },
   { title: 'System', names: ['/update'] },
   { title: 'Help', names: ['/help', '/exit'] },
@@ -359,6 +370,7 @@ export async function makeTask(
   requiredFiles: string[],
   workspace: string,
   auto?: AutoDefaults | null,
+  images?: string[],
 ): Promise<EngineeringTask> {
   if (!tests.length || tests.some(test => !test.trim())) throw new Error('Supply at least one --test command; verification is required.')
   if (!(await stat(workspace)).isDirectory()) throw new Error('Workspace must be a directory.')
@@ -399,7 +411,15 @@ export async function makeTask(
         ? [pageCheckCommand(pageEntryFile(request), { allowExtraHtml: pageIsMultiFile(request) }), ...tests]
         : tests,
     },
-    modelRequirements: { capability: 'coding' },
+    modelRequirements: {
+      capability: 'coding',
+      // THE IMAGES THE OPERATOR ATTACHED (2026-11-10). They ride the task
+      // the way `ModelRequirements.images` was always meant to: the model
+      // requirements already carry images for the vision lanes, and the
+      // router already puts them on the wire. The build path simply had
+      // no way to hand any over.
+      ...(images && images.length > 0 ? { images } : {}),
+    },
   }
 }
 
@@ -1079,7 +1099,7 @@ export function failureEvidenceLines(
   return lines
 }
 
-async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: RunSink, signal?: AbortSignal, workspace?: string): Promise<void> {
+async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: RunSink, signal?: AbortSignal, workspace?: string, clarify?: Clarifier): Promise<void> {
   const startedAt = Date.now()
   const seen = new Set<string>()
   async function showEvents(): Promise<void> {
@@ -1112,7 +1132,11 @@ async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: Ru
     }
   })()
   try {
-    const outcome = await runHermesTask(id, signal ? { signal } : {})
+    // The question channel (2026-11-10): the architect and the planner may
+    // ask the operator what they are looking for, and the run pauses until
+    // they answer. The harness is in-process with the Factory, so the
+    // question travels as a callback, not as a message.
+    const outcome = await runHermesTask(id, signal || clarify ? { signal, clarify } : {})
     monitoring = false
     await monitor
     await showEvents()
@@ -1235,7 +1259,7 @@ async function runRecorded(id: string, bus: PersistentFactoryEventBus, sink?: Ru
   }
 }
 
-async function submitAndRun(task: EngineeringTask, bus: PersistentFactoryEventBus, sink?: RunSink, signal?: AbortSignal): Promise<void> {
+async function submitAndRun(task: EngineeringTask, bus: PersistentFactoryEventBus, sink?: RunSink, signal?: AbortSignal, clarify?: Clarifier): Promise<void> {
   const id = await submitTask({ task, supervisor: 'terminal-harness' })
   if (sink) {
     // Hermes' turn-start rule: a 40-cell accent line separates one turn's work
@@ -1243,7 +1267,19 @@ async function submitAndRun(task: EngineeringTask, bus: PersistentFactoryEventBu
     sink.line('─'.repeat(40), 'dim')
     sink.line(`submitted: ${id}`, 'plain')
   } else console.log(`submitted: ${id}`)
-  await runRecorded(id, bus, sink, signal, task.workspace)
+  await runRecorded(id, bus, sink, signal, task.workspace, clarify)
+}
+
+/**
+ * How a question ended (2026-11-10).
+ *
+ * `escape` = the operator chose not to answer this one. `ctrl-c` = the
+ * operator wants the run to stop -- the key that means "stop" everywhere else
+ * in this app must not become a soft no-op here.
+ */
+export interface ClarifyOutcome {
+  answer?: string
+  cancelled?: 'escape' | 'ctrl-c'
 }
 
 interface ReplUi {
@@ -1282,6 +1318,29 @@ interface ReplUi {
   /** Repaint after a select overlay closes. Absent on classic. */
   redraw?(): void
   /**
+   * The images waiting to go with the next request (2026-11-10).
+   *
+   * The operator attaches a picture on the composer (a dropped file, a
+   * Ctrl+V) and the picture has to survive until the request is sent. The
+   * surface owns it -- the screen owns the composer, the classic path owns
+   * nothing and has none -- and the dispatcher reads it here.
+   */
+  pendingAttachments?(): ImageAttachment[]
+  /**
+   * Drop the images that were waiting.
+   *
+   * Called the moment the request takes them: from then on they belong to
+   * THAT request, and a second request must not carry them by accident.
+   */
+  clearAttachments?(): void
+  /**
+   * Put an image in the waiting list (2026-11-10).
+   *
+   * This is how `/attach` works: the command reads the clipboard (or a
+   * file) and hands the result to the surface, which owns the list.
+   */
+  attachImage?(attachment: ImageAttachment): void
+  /**
    * Clear the session's visible history. `fresh` also drops the session ledger
    * so the next request reads as the first one.
    *
@@ -1301,6 +1360,19 @@ interface ReplUi {
    * `state`; classic has no live keyboard and leaves it undefined.
    */
   watchRun?: (onInterrupt: () => void) => () => void
+  /**
+   * Ask the operator ONE question (2026-11-10).
+   *
+   * The architect and the planner may pause a run to ask what the operator is
+   * actually looking for. This is the surface that question lands on: one
+   * question, one line of input, one answer.
+   *
+   * `cancelled` says HOW the question was closed, because the two ways mean
+   * different things: `escape` is "I am not answering this one", and
+   * `ctrl-c` is "stop the run" -- the key that means that everywhere else in
+   * this app must not turn into a soft no-op here.
+   */
+  clarify?(question: string): Promise<ClarifyOutcome>
   /** Called when the crew seats change; the holder repaints its rail. */
   crewChanged?: () => void
   /**
@@ -1840,8 +1912,26 @@ async function repl(args: string[], bus: PersistentFactoryEventBus, ask: Ask, cl
     return
   }
   console.log(banner())
+  // THE IMAGES WAITING TO GO WITH THE NEXT REQUEST (2026-11-10).
+  //
+  // The classic path has no screen, so it keeps its own list -- but the
+  // RULES are the screen's rules: the same hooks, the same lifetime, the
+  // same "they belong to the request that takes them". A pipe is a
+  // different surface, not a different feature.
+  const classicAttachments: ImageAttachment[] = []
   const ui: ReplUi = {
     ask,
+    // The question channel (2026-11-10). On the classic path a question is
+    // a readline prompt: the question is the prompt, the answer is the line.
+    // Ctrl+C is SIGINT here, which the interrupt handler turns into a run
+    // abort -- so a cancelled question on this path means the run is stopping.
+    clarify: async question => {
+      const answer = await ask(`${question}\n> `)
+      if (answer === undefined) return { cancelled: 'ctrl-c' }
+      const trimmed = answer.trim()
+      if (!trimmed) return { cancelled: 'escape' }
+      return { answer: trimmed }
+    },
     approve: task => approve(task, ask, classic),
     note: text => console.log(text),
     error: text => console.error(text),
@@ -1853,6 +1943,14 @@ async function repl(args: string[], bus: PersistentFactoryEventBus, ask: Ask, cl
     // On a pipe there is no screen state to clear, so /clear is a receipt and
     // nothing else — pretending to clear anything here would be a lie.
     clearSession: () => {},
+    // The images waiting with the next request (2026-11-10).
+    pendingAttachments: () => classicAttachments,
+    clearAttachments: () => {
+      classicAttachments.length = 0
+    },
+    attachImage: attachment => {
+      classicAttachments.push(attachment)
+    },
     // A pipe has no rail to thin, but the choice is durable: /display here
     // saves the density the next live session starts with.
     display: mode => (mode ? saveDisplay(mode) : loadDisplay()),
@@ -1893,7 +1991,10 @@ export const PALETTE: SelectOption[] = [
   { title: '/agents', desc: 'crew profile · seat models', footer: 'agents', value: '/agents' },
   { title: '/crew', desc: 'list · select · edit · delete teams', footer: 'crew', value: '/crew' },
   { title: '/team', desc: 'how the team works: shape · repairs · budget · test', footer: 'team', value: '/team' },
+  { title: '/skills', desc: 'your own skills · install a .skill package', footer: 'skills', value: '/skills' },
+  { title: '/mcp', desc: 'MCP servers · attach · connect · their tools', footer: 'mcp', value: '/mcp' },
   { title: '/templates', desc: 'save · list · run a request again', footer: 'templates', value: '/templates' },
+  { title: '/attach', desc: 'attach an image (clipboard, or a file) to the next request', footer: 'attach', value: '/attach ' },
   { title: '/model', desc: 'all models from all connections · pick a role for one', footer: 'model', value: '/model ' },
   { title: '/tasks', desc: 'list persisted Hermes tasks', footer: 'tasks', value: '/tasks' },
   { title: '/result', desc: 'inspect a stored task and result', footer: '<id>', value: '/result ' },
@@ -2128,8 +2229,8 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
     // appended to `work`, so the banner can never advertise fewer commands
     // than the help page does.
     const groups: Array<[string, string[]]> = [
-      ['session', ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q']],
-      ['setup', ['/connect', '/create', '/model', '/agents', '/crew', '/team', '/templates', '/onboard']],
+      ['session', ['/status', '/doctor', '/stats', '/display', '/debug', '/compact', '/clear', '/new', '/q', '/attach']],
+      ['setup', ['/connect', '/create', '/model', '/agents', '/crew', '/team', '/templates', '/skills', '/mcp', '/onboard']],
       ['work', ['/tasks', '/result', '/events', '/run', '/review', '/health']],
       ['system', ['/update']],
       ['help', ['/help']],
@@ -2297,6 +2398,25 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
   let queuedCommand: string | undefined
   /** Requests composed while a run is live; dispatched one per turn, in order. */
   const queuedRequests: string[] = []
+  /**
+   * THE CLIPBOARD, BEHIND Ctrl+V (2026-11-10).
+   *
+   * A TEXT paste never reaches the app: the terminal reads the clipboard's
+   * text and sends it as a bracketed paste. What the app has to do itself
+   * is the case the terminal cannot handle -- an IMAGE on the clipboard,
+   * which most terminals paste as nothing at all.
+   *
+   * So the composer asks for the clipboard's image, and the screen puts it
+   * in the pending list and shows the receipt. A clipboard with no image is
+   * a quiet no-op: the operator pasted text and the terminal already sent
+   * it.
+   */
+  const readClipboard = async (): Promise<
+    { attachment: ImageAttachment } | undefined
+  > => {
+    const attachment = await readClipboardImage()
+    return attachment ? { attachment } : undefined
+  }
   /** One configuration line: prompt in the status, no history, no echo. */
   const readConfigLine = async (prompt?: string): Promise<string | undefined> => {
     for (;;) {
@@ -2322,6 +2442,53 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
     }
   }
   const ui: ReplUi = {
+    // THE QUESTION CHANNEL (2026-11-10, operator report: "the stage
+    // architect and planner don't ask question they just go").
+    //
+    // The architect and the planner decide the DIRECTION, and the operator is
+    // the one who knows what they are looking for. When one of them asks,
+    // the question lands HERE: in the transcript (so it is still readable
+    // after the run) and in the status line (so it is visible while the
+    // operator answers). One question, one line, one answer.
+    //
+    // Esc means "I am not answering this one" -- the same grammar the other
+    // prompts in this app use ("enter saves · esc cancels"). Ctrl+C means
+    // "stop the run", because that is what Ctrl+C means everywhere else here
+    // and a question must not turn it into a soft no-op.
+    clarify: async question => {
+      screen.push(state, { text: `? ${question}`, tone: 'cyan' })
+      const before = state.status
+      state.status = question
+      screen.render(state)
+      let cancelled: 'escape' | 'ctrl-c' | undefined
+      try {
+        const answer = await screen.readLine(state, [], {
+          ctrlC: 'cancel',
+          escape: 'cancel',
+          onCancel: reason => { cancelled = reason },
+        })
+        if (answer === undefined) {
+          screen.push(
+            state,
+            {
+              text:
+                cancelled === 'ctrl-c'
+                  ? '✗ cancelled — stopping the run'
+                  : '· no answer — the seat continues with what it knows',
+              tone: 'dim',
+            },
+          )
+          screen.render(state)
+          return { cancelled: cancelled ?? 'escape' }
+        }
+        const trimmed = answer.trim()
+        screen.push(state, { text: `  ${trimmed}`, tone: 'dim' })
+        screen.render(state)
+        return { answer: trimmed }
+      } finally {
+        state.status = before
+      }
+    },
     // Hints replace the prompt in the status line (opencode footer grammar):
     // showing "wednesday> " there duplicated the composer box.
     ask: async () => {
@@ -2363,7 +2530,10 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
           return framed
         }
         state.status = state.busy ? BUSY_HINTS : COMPOSER_HINTS
-        let value = await screen.readLine(state, history)
+        let value = await screen.readLine(state, history, {
+          // The clipboard read behind Ctrl+V (2026-11-10).
+          onPasteRequest: readClipboard,
+        })
         // Ctrl+P sets the flag and returns undefined — reopen with the
         // palette up front. A lone `/` does the same (typed form).
         if (value === undefined && screen.pendingPalette) {
@@ -2542,6 +2712,31 @@ async function screenRepl(defaults: ReturnType<typeof parseFlags>, bus: Persiste
       return choice
     },
     redraw: () => screen.render(state),
+    // THE IMAGES WAITING TO GO WITH THE NEXT REQUEST (2026-11-10).
+    //
+    // The screen owns them because the screen owns the composer: the
+    // picture was attached THERE (a dropped file, a Ctrl+V), and it has to
+    // be somewhere until the request is sent. The dispatcher reads them
+    // when the request goes out and clears them the moment they belong to
+    // it.
+    pendingAttachments: () => state.pendingAttachments ?? [],
+    clearAttachments: () => {
+      state.pendingAttachments = []
+    },
+    // `/attach` hands the image here (2026-11-10). The receipt is a
+    // TRANSCRIPT row: the operator must SEE that the picture is going with
+    // the request. A silent attachment is an attachment nobody trusts.
+    attachImage: attachment => {
+      state.pendingAttachments = [
+        ...(state.pendingAttachments ?? []),
+        attachment,
+      ]
+      screen.push(state, {
+        text: `▣ ${describeAttachment(attachment)}`,
+        tone: 'dim',
+      })
+      screen.render(state)
+    },
     // Clear the stream, and for /new ALSO take the session ledger (and its
     // token count) with it. The composer and history survive: clearing the
     // screen is not amnesia, and the draft in the box is the operator's.
@@ -3441,6 +3636,52 @@ export async function replLoop(
     operatorAbort = true
     running.abort()
   }
+  // THE LIVE-RUN COMPOSER (2026-11-10).
+  //
+  // While a run is live the composer is armed: Esc interrupts, anything else
+  // queues the next request. A QUESTION asked mid-run needs the same keyboard,
+  // and the keyboard has ONE owner at a time (B70) -- so the question takes it
+  // and the composer gets it back when the answer is in.
+  //
+  // The handle lives in a variable, not in a local: the composer is re-armed
+  // after every question, so the run's own cleanup must stop whatever is
+  // armed AT THAT MOMENT, not the one it armed first.
+  let runComposerStop: (() => void) | null = null
+  const armRunComposer = (): void => {
+    runComposerStop = ui.watchRun?.(abortRun) ?? (() => {})
+  }
+  const releaseRunComposer = (): void => {
+    const stop = runComposerStop
+    runComposerStop = null
+    stop?.()
+  }
+  /**
+   * THE QUESTION CHANNEL (2026-11-10).
+   *
+   * The architect and the planner may ask the operator what they are actually
+   * looking for; the run pauses until they answer, and the seat runs again
+   * with the answer. The question is asked ONE at a time -- a form is not a
+   * conversation.
+   */
+  const clarify: Clarifier = async question => {
+    if (!ui.clarify) return undefined
+    // The keyboard changes hands. The run's STOP control stays armed: a run
+    // paused on a question is still a run the operator can stop with the
+    // mouse, and the mouse button must not go dead while they think.
+    screen?.releaseRunKeyboard()
+    try {
+      const outcome = await ui.clarify(question)
+      if (outcome.cancelled === 'ctrl-c') {
+        // Ctrl+C means "stop" everywhere else in this app. A question must not
+        // turn it into a soft no-op.
+        abortRun()
+        return undefined
+      }
+      return outcome.answer
+    } finally {
+      armRunComposer()
+    }
+  }
   const stopInterrupt = installInterrupt({
     isRunning: () => running !== null,
     abort: abortRun,
@@ -3601,6 +3842,73 @@ export async function replLoop(
       if (line === '/team' || line.startsWith('/team ')) {
         // The team's POLICY: how it works, not who is in it. See teamFlow.
         await teamFlow(ui, line.slice('/team'.length).trim())
+        continue
+      }
+      if (line === '/skills' || line.startsWith('/skills ')) {        // THE OPERATOR'S OWN SKILLS (2026-11-11). Until now every skill in
+        // the factory was ours: the DSH packages, the ECC playbooks, the
+        // distilled doctrine. The operator could read them and could not add
+        // one. This command lists what they installed, shows where it is
+        // looked for, and installs a `.skill` package through the audit gate.
+        const { skillsFlow } = await import('./skills-command')
+        await skillsFlow(ui, line.slice('/skills'.length).trim(), {
+          workspace: defaults.workspace,
+        })
+        continue
+      }
+      if (line === '/mcp' || line.startsWith('/mcp ')) {
+        // THE OPERATOR'S MCP SERVERS (2026-11-11). The dsh ACP bridge
+        // REFUSES a non-empty `mcpServers` array, and the provisioned
+        // runtime carries no MCP client plugin -- so Wednesday speaks MCP
+        // itself (`factory/mcp/client.ts`). This command attaches a server,
+        // connects to it, lists its tools, and says which of the two
+        // actually happened.
+        const { mcpFlow } = await import('./mcp-command')
+        await mcpFlow(ui, line.slice('/mcp'.length).trim())
+        continue
+      }
+      if (line === '/attach' || line.startsWith('/attach ')) {
+        // ATTACH AN IMAGE TO THE NEXT REQUEST (2026-11-10, operator report:
+        // "im not able add iamges on contol+v on cammnd tab, or drag and drop
+        // iamges to command tab").
+        //
+        // WHY THIS COMMAND EXISTS when the composer already takes a dropped
+        // path: a terminal's Ctrl+V is the TERMINAL's paste, not the app's.
+        // When the clipboard holds a picture there is no text to paste, so
+        // most terminals paste nothing and the operator's keypress looks
+        // dead -- the app never even sees the key.
+        //
+        // The clipboard is readable by the app at ANY time, so the operator
+        // needs a way to say "attach that": this command. With no argument it
+        // takes the clipboard's image; with a path it takes the file.
+        const arg = line.slice('/attach'.length).trim()
+        const images: ImageAttachment[] = []
+        if (!arg) {
+          try {
+            const clipboard = await readClipboardImage()
+            if (clipboard) images.push(clipboard)
+            else {
+              ui.note('The clipboard holds no image. /attach <file> attaches a file instead.')
+              continue
+            }
+          } catch (error) {
+            ui.error(
+              `the clipboard image could not be read: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            continue
+          }
+        } else {
+          const collected = await collectImageAttachments(arg)
+          for (const error of collected.errors) ui.note(error)
+          if (collected.attachments.length === 0) {
+            ui.note(`No image attached from: ${arg}`)
+            continue
+          }
+          images.push(...collected.attachments)
+        }
+        for (const image of images) ui.attachImage?.(image)
+        ui.note(
+          `▣ ${images.length} image${images.length === 1 ? '' : 's'} attached — they go with the NEXT request.`,
+        )
         continue
       }
       if (line === '/templates' || line.startsWith('/templates ')) {
@@ -3772,7 +4080,7 @@ export async function replLoop(
         // broken even when it had checked nothing at all.
         const pkg = createRequire(import.meta.url)('../../package.json') as { version?: string }
         const version = typeof pkg.version === 'string' ? pkg.version : 'unknown'
-        const { installUpdate, updateCommandLine } = await import('./updater')
+        const { installUpdate, updateCommandLine, npmAvailability } = await import('./updater')
         // A registry check can spend seconds behind a dead network. Say so
         // before awaiting it: the old path went silent, and a silent screen
         // under a typed command is indistinguishable from a freeze.
@@ -3806,7 +4114,28 @@ export async function replLoop(
           continue
         }
         ui.progress?.('installing update from npm…')
-        const outcome = installUpdate({ version: found.remote })
+        // WHY THE AVAILABILITY CHECK (operator report, 2026-11-09): the old
+        // path went straight to the install, so "npm is not installed" and
+        // "the install failed" looked identical. They are different answers,
+        // and the first one has to be answerable BEFORE the second is tried.
+        const availability = npmAvailability()
+        if (!availability.available) {
+          ui.error(
+            `update cannot run: ${availability.detail} — install Node.js (which ships npm), then run: ${updateCommandLine(found.remote)}`,
+          )
+          continue
+        }
+        // WHY ASYNC + STREAMING: the old call was a blocking spawnSync with
+        // npm's output captured and never shown, so the terminal froze for the
+        // whole install with nothing on screen. Now every npm line reaches the
+        // operator as npm prints it, and the screen keeps painting.
+        const outcome = await installUpdate({
+          version: found.remote,
+          progress: {
+            step: text => ui.progress?.(text),
+            output: line => ui.note(`  ${line}`),
+          },
+        })
         if (outcome.ok) {
           if (isTty() && shouldAutoRestart()) {
             // Auto-restart onto the new version (operator, 2026-11-01): re-exec
@@ -4362,9 +4691,9 @@ export async function replLoop(
               // typing composes the next request instead of vanishing. The
               // keyboard belongs to whoever owns the draft (see ReplUi.watchRun),
               // never to this loop.
-              const stop = ui.watchRun?.(abortRun) ?? (() => {})
-              try { await runRecorded(id, bus, sink, controller.signal, record.engineeringTask.workspace) } finally {
-                stop()
+              armRunComposer()
+              try { await runRecorded(id, bus, sink, controller.signal, record.engineeringTask.workspace, clarify) } finally {
+                releaseRunComposer()
                 if (operatorAbort) {
                   ui.note('run halted at your request — nothing further ran.')
                   operatorAbort = false
@@ -4378,6 +4707,35 @@ export async function replLoop(
         }
         continue
       }
+      // THE IMAGES THAT GO WITH THIS REQUEST (2026-11-10, operator report:
+      // "im not able add iamges on contol+v on cammnd tab, or drag and drop
+      // iamges to command tab").
+      //
+      // Two sources, one place:
+      //
+      //  - The images the operator attached on the composer (a dropped
+      //    file, a Ctrl+V with an image on the clipboard). The surface owns
+      //    them until the request takes them.
+      //  - The image PATHS in the operator's own text. A terminal delivers
+      //    a dropped file as TEXT -- the path -- so this is the route that
+      //    works in every terminal, including the ones that eat Ctrl+V.
+      //
+      // The paths are REPLACED in the text: the model cannot open the
+      // operator's disk, so what it gets is `[image: name]` and the picture
+      // itself.
+      const pendingImages = ui.pendingAttachments?.() ?? []
+      const collected = await collectImageAttachments(line)
+      const attachments = [...pendingImages, ...collected.attachments]
+      // The images belong to THIS request from here on. A second request
+      // must not carry them by accident.
+      ui.clearAttachments?.()
+      for (const error of collected.errors) ui.note(error)
+      if (attachments.length > 0) {
+        ui.note(
+          `▣ ${attachments.length} image${attachments.length === 1 ? '' : 's'} attached · ${attachments.map(attachment => attachment.name).join(', ')}`,
+        )
+      }
+      const requestText = collected.text
       // Zero-config path (2026-10-03): a bare request just works. Explicit
       // flags still win; otherwise the workspace decides. We only warn when
       // the guess is untrustworthy — never a blocking prompt mid-flow.
@@ -4394,7 +4752,7 @@ export async function replLoop(
       // becomes a SIGINT that exits. That whole picture was reported as "type
       // / and everything freezes" (2026-10-16). With the watcher the terminal
       // stays in raw mode and a press means "forget this request".
-      const inline = parseInlineFlags(line)
+      const inline = parseInlineFlags(requestText)
       if (pending) {
         // A saved request carries its own flags; merge them with whatever the
         // saved line itself carried.
@@ -4628,6 +4986,10 @@ export async function replLoop(
                     ? { ...route, model: moa.aggregator }
                     : route,
                   history: chatHistory,
+                  // The images the operator attached (2026-11-10). Every
+                  // teammate is asked the same question, so every teammate
+                  // has to SEE the picture.
+                  images: attachments.map(attachment => attachment.url),
                 })
                 // The receipt is not a footnote: a run that quietly used one
                 // model must not look like a team, and a teammate that failed
@@ -4650,14 +5012,32 @@ export async function replLoop(
                 paintLive()
                 continue
               }
+             // THE MCP TOOLS THE MODEL MAY CALL (2026-11-11). The operator
+             // attached the servers with `/mcp`; the tools they expose ride
+             // the request, and a tool call runs on the server that owns it.
+             // Two gates keep this quiet by default: the model must be known
+             // to do native tool calls, and there must be a tool to offer.
+             const mcpTools = await mcpChatToolOptions(route.model, route.name, name =>
+               ui.note(`▣ tool: ${name}`),
+             )
              // Memory only on a completed turn: a failed or halted exchange is
            // not remembered, so the next turn keeps question/answer order.
            const answer = await chatComplete(
              route,
-             buildChatRequest(chatHistory, userText),
+             // THE IMAGES RIDE THE TURN (2026-11-10). They are attached to
+             // THIS user turn and not to the remembered history: a
+             // conversation that carries a 4MB picture on every later turn
+             // would pay for it again and again, and the operator asked a
+             // question about the picture once.
+             buildChatRequest(
+               chatHistory,
+               userText,
+               attachments.map(attachment => attachment.url),
+             ),
              onDelta,
              chatAbort.signal,
              onReasoning,
+             mcpTools,
            )
            if (lineBuf.trim()) ui.note(lineBuf)
            lineBuf = ''
@@ -4840,7 +5220,18 @@ export async function replLoop(
         ui.progress?.('reading workspace…')
         ui.running?.(true)
         try {
-          task = await makeTask(inline.objective, tests, requiredFiles, inline.workspace ?? defaults.workspace, auto)
+          task = await makeTask(
+            inline.objective,
+            tests,
+            requiredFiles,
+            inline.workspace ?? defaults.workspace,
+            auto,
+            // The images the operator attached, as the wire form
+            // (`data:` URLs). The task carries them in its model
+            // requirements, and the router puts them on the wire for
+            // every seat that reads images (2026-11-10).
+            attachments.map(attachment => attachment.url),
+          )
         } finally {
           ui.running?.(false)
         }
@@ -4866,11 +5257,11 @@ export async function replLoop(
           running = controller
           // Same keyboard contract as the /run path above: the draft is the
           // screen's, so the watch is armed through the ui hook, not here.
-          const stop = ui.watchRun?.(abortRun) ?? (() => {})
+          armRunComposer()
           try {
-            await submitAndRun(task, bus, sink, controller.signal)
+            await submitAndRun(task, bus, sink, controller.signal, clarify)
           } finally {
-            stop()
+            releaseRunComposer()
             if (operatorAbort) {
               ui.note('run halted at your request — nothing further ran.')
               operatorAbort = false

@@ -23,7 +23,9 @@ import assert from 'node:assert/strict'
 import {
   AGENT_ROLES,
   ANALYSIS_ROLES,
+  architectAgent,
   bugHunterAgent,
+  plannerAgent,
   securityAuditAgent,
 } from './roles'
 import { AgentRegistry } from './registry'
@@ -202,7 +204,64 @@ function main(): void {
     )
   }
 
-  // 7. A FAILED SEAT'S OUTPUT IS STILL AN OUTPUT. The orchestrator keeps
+  // 7. THE SEATS THAT DECIDE THE DIRECTION ASK (2026-11-10).
+  //
+  //    "the stage architect and planner don't ask question they just go? ...
+  //     they must ask relevant question related the task then next and so on"
+  //
+  // The old architect body told the seat to "choose the reading that needs
+  // the fewest assumptions" -- a GUESS instruction, and the reason the seat
+  // never asked. The rule now has to be the opposite, and it has to be
+  // checkable: the seat asks, in a shape the run can parse, and it says how
+  // many questions it may ask.
+  for (const seat of [
+    architectAgent,
+    plannerAgent,
+  ]) {
+    const prompt = promptOf(seat)
+
+    assert.ok(
+      prompt.includes('QUESTIONS:'),
+      `the ${seat.id} must write its questions under QUESTIONS:`,
+    )
+    assert.ok(
+      /QUESTIONS:\s*none/.test(prompt),
+      `the ${seat.id} must say what "no questions" looks like`,
+    )
+    assert.ok(
+      /At most 3 questions/i.test(prompt),
+      `the ${seat.id} must be told the cap`,
+    )
+    assert.ok(
+      /ASK\./.test(prompt),
+      `the ${seat.id} must be told to ASK`,
+    )
+    assert.ok(
+      !prompt.includes('fewest assumptions'),
+      `the ${seat.id} must not be told to guess`,
+    )
+  }
+
+  // The answers reach the seat's prompt (the seat runs again with them).
+  const answered = architectAgent.buildPrompt({
+    ...CONTEXT,
+    clarifications: [
+      {
+        question: 'Which database do you want?',
+        answer: 'Postgres',
+      },
+    ],
+  })
+  assert.ok(
+    answered.includes('THE OPERATOR ANSWERED YOUR QUESTIONS'),
+    'the answers must be in the seat prompt',
+  )
+  assert.ok(
+    answered.includes('A1: Postgres'),
+    'the answer must be in the seat prompt',
+  )
+
+  // 8. A FAILED SEAT'S OUTPUT IS STILL AN OUTPUT. The orchestrator keeps
   //    it, so the repair loop has memory (B224). The role runner contract
   //    must allow a role to report blocking issues.
   const failed: AgentOutput = {
