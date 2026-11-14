@@ -38,6 +38,10 @@ export const DENY = [
   /^wednesday-theme\//,
   /^AGENTS\.md$/,
   /^factory\/tmp\//,
+  // The Ink renderer was orphaned by the 2026-11-14 harness removal: it imports
+  // deleted modules and cannot run. It is untracked locally, so it must be
+  // denied by name or the exporter (which copies the working tree) ships it.
+  /^factory\/tui-ink\//,
   /(^|\/)\.env/,
   /(^|\/)state\//,
 ]
