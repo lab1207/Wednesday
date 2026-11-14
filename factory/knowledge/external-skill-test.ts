@@ -21,7 +21,6 @@ import {
   removeInstalledSkill,
 } from './skill-package.js'
 import { CompositeSkillSource } from './ecc-skill-adapter.js'
-import { skillsFlow } from '../harness/skills-command.js'
 
 /**
  * THE OPERATOR'S OWN SKILLS (2026-11-11).
@@ -369,31 +368,10 @@ writeSkill(
 // 6. THE COMMAND: what the operator sees.
 // ---------------------------------------------------------------------------
 
-{
-  const notes: string[] = []
-  const errors: string[] = []
-  const ui = {
-    note: (text: string) => { notes.push(text) },
-    error: (text: string) => { errors.push(text) },
-  }
-
-  await skillsFlow(ui, '', { home: operatorHome, workspace: join(work, 'project') })
-  const listing = notes.join('\n')
-  assert.match(listing, /external skills: \d+/, 'the listing counts the skills')
-  assert.match(listing, /ext:house-style/, 'and names them')
-  assert.match(listing, /ext:release-checklist/, 'including the project one')
-
-  notes.length = 0
-  await skillsFlow(ui, 'path', { home: operatorHome, workspace: join(work, 'project') })
-  assert.match(notes.join('\n'), /skills are looked for in/)
-
-  // An unknown verb is refused, not ignored.
-  notes.length = 0
-  await skillsFlow(ui, 'frobnicate', { home: operatorHome })
-  assert.equal(errors.length, 1)
-  assert.match(errors[0]!, /unknown/i)
-}
+// The slash-command surface for skills died with the terminal harness
+// (2026-11-14). Discovery and loading are asserted above; nothing here needs
+// a command renderer any more.
 
 console.log(
-  'EXTERNAL SKILL TEST: PASS (a dropped skill is discovered and loaded, the project copy wins, a folder without a SKILL.md is reported, the composite loads what it lists, a .skill package installs through the audit gate, a hostile package and a zip slip are refused, and the command says what happened)',
+  'EXTERNAL SKILL TEST: PASS (a dropped skill is discovered and loaded, the project copy wins, a folder without a SKILL.md is reported, the composite loads what it lists, a .skill package installs through the audit gate, and a hostile package and a zip slip are refused)',
 )

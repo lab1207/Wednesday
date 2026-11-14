@@ -16,7 +16,7 @@ import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pageCheckCommand } from '../harness/page-brief'
+import { pageCheckCommand } from './page-brief'
 import { parseNodeEvalCommand, runNodeEval } from './node-eval'
 import { VerificationEngine } from './verification-engine'
 

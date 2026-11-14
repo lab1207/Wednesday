@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net'
 
 // THE TEST'S OWN STATE HOME (must be first: it sets the env var before
 // `factory/paths.ts` is evaluated).
-import '../harness/test-state-home.js'
+import '../test-state-home.js'
 
 import {
   addMcpServer,
@@ -18,7 +18,6 @@ import {
 } from './config.js'
 import { connectMcpServer, callMcpTool } from './client.js'
 import { mcpToolBindings, mcpToolSpecs, mcpWireName, runMcpTool } from './tools.js'
-import { mcpFlow, tokenizeMcp } from '../harness/mcp-command.js'
 
 /**
  * THE OPERATOR'S MCP SERVERS (2026-11-11).
@@ -317,54 +316,12 @@ httpServer.close()
 }
 
 // ---------------------------------------------------------------------------
-// 5. THE COMMAND: what the operator sees.
+// 5. THE COMMAND — removed 2026-11-14 with the terminal harness.
+//
+// The registry, the transports and the wire names are asserted above. The
+// slash-command renderer that used to be checked here is gone with the TUI.
 // ---------------------------------------------------------------------------
 
-{
-  assert.deepEqual(tokenizeMcp('add files stdio node "C:\\My Server\\index.js"'), [
-    'add',
-    'files',
-    'stdio',
-    'node',
-    'C:\\My Server\\index.js',
-  ])
-
-  const notes: string[] = []
-  const errors: string[] = []
-  const ui = {
-    note: (text: string) => { notes.push(text) },
-    error: (text: string) => { errors.push(text) },
-  }
-
-  // The command talks to the REAL registry, so the test points it at one.
-  const path = join(work, 'command-mcp.json')
-  await addMcpServer(
-    {
-      name: 'fixture',
-      transport: 'stdio',
-      command: process.execPath,
-      args: [serverPath],
-      enabled: true,
-    },
-    path,
-  )
-
-  // (The command reads the default registry path, so the state home the
-  // test owns is what it reads.)
-  const { registry } = await loadMcpRegistry()
-  assert.equal(registry.servers.length, 0, 'the test state home starts empty')
-
-  notes.length = 0
-  await mcpFlow(ui, '')
-  assert.match(notes.join('\n'), /no MCP servers attached/)
-
-  // An unknown verb is refused.
-  notes.length = 0
-  await mcpFlow(ui, 'frobnicate')
-  assert.equal(errors.length, 1)
-  assert.match(errors[0]!, /unknown/i)
-}
-
 console.log(
-  'MCP TEST: PASS (a real stdio server connects and its tool runs, a real HTTP server answers, the registry refuses a duplicate and a broken file, only enabled servers are offered to the model, and the command says what happened)',
+  'MCP TEST: PASS (a real stdio server connects and its tool runs, a real HTTP server answers, the registry refuses a duplicate and a broken file, and only enabled servers are offered to the model)',
 )

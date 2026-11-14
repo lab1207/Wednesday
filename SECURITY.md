@@ -72,10 +72,13 @@ tools, so a repository you point Wednesday at can hand it hostile prose
 and let it decide what to do. Three defences already apply, and each is
 tested:
 
-- **The approval gate.** Every command is shown before it runs
-  (`factory/harness/harness.ts`, pinned by `harness-test.ts`). A pasted `y`
-  can never approve a run (bracketed paste is disabled on the gate), so the
-  human sees the command that would execute.
+- **No approval gate over MCP — deliberately stated.** The interactive
+  command-preview gate died with the terminal harness (2026-11-14). A run
+  started through `wednesday_run` is **unattended**: the team works inside the
+  workspace you named and nothing asks before a command runs. Treat the
+  workspace boundary, not a prompt, as the trust boundary, and give the run a
+  directory whose contents you are willing to have modified. Wiring MCP
+  elicitation to an approval gate is open work, not a shipped feature.
 - **Confinement.** File tools are workspace-confined: a `../escape.txt`
   write fails with "escapes workspace", and no tool goes through a shell —
   a model-written directory name containing `&` or `$(...)` is listed

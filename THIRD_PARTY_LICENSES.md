@@ -271,6 +271,42 @@ verified against the development tree on 2026-09-20.
 - The decision record (what was taken, what was not, and why) lives in
   `docs/WEDNESDAY_QWEN_CODE_ADOPTION_2026-11-04.md`.
 
+## pi-tui (@earendil-works/pi-tui) — MIT (SHIPPED AS A DEPENDENCY, 2026-11-12)
+
+- Copyright (c) 2025 Mario Zechner / earendil-works (LICENSE verified MIT
+  2026-11-12 against the published manifest: `@earendil-works/pi-tui@1.5.2`,
+  license field "MIT"). The MIT notice travels with the shipped package;
+  full text at https://opensource.org/licenses/MIT.
+- **What it is:** pi's terminal UI library — the same one Cline's CLI draws
+  on — declared in `package.json` as a direct runtime dependency and
+  shipped in the npm tarball. Unlike every entry above, this one is USED
+  AS A LIBRARY, not ported: Wednesday draws its own window, layout, brand,
+  overlays and behaviours through it.
+- **Where it lands:** `factory/tui-pi/` — the pi viewport surface:
+  `frame.ts` (layout, global keys, overlays, live rows), `ui.ts` (the
+  engine's `ReplUi` seam), `entry.ts` (boot), `main.ts` (standalone entry),
+  plus the components the engine needed that pi-tui does not ship:
+  `line-input.ts` (masked secret + plain question), `pager.ts` (the engine's
+  page grammar), `blocks.ts` (toned blocks, diff, in-place live row), and
+  `theme.ts` (the engine's tone names mapped to Wednesday's brand hexes).
+- **Changes Wednesday made on top** (all Wednesday's own code, no upstream
+  file copied): the violet-on-black theme bridge, the masked input mode, the
+  pager's window semantics, the diff block, the in-place live row keyed by
+  work unit, the session ledger, and the engine adapters. pi-tui is used
+  through its public API only.
+- **Deliberately NOT adopted:** pi's coding-agent CLI, its AI/provider
+  layer, its session storage, and its model catalog. Wednesday's brain
+  (Hermes → FactoryService) is unchanged.
+- The decision record lives in
+  `docs/WEDNESDAY_TUI_PI_DECISION_2026-11-12.md`. The earlier
+  behaviour-only ports from the same project (kill ring, undo stack,
+  transcript search, fuzzy rules, sync-output pair) are recorded above and
+  are untouched by this dependency.
+- **Also shipped transitively** (pi-tui's own dependencies, all MIT or
+  ISC/BSD-family per their manifests): `marked@18.0.11` (MIT),
+  `marked-cjk-friendly@0.1.2` (MIT), `get-east-asian-width@1.6.0` (MIT).
+  A full transitive audit runs before any `npm publish`.
+
 ## Qwen Code (QwenLM/qwen-code) — Apache-2.0 (adapted, nothing vendored)
 
 - Copyright 2025 Google LLC (per the upstream file headers; Apache-2.0, full
@@ -310,6 +346,8 @@ manifests on 2026-09-20 (B3 audit):
 - `@deepseek-ai/cordis@4.0.2` — MIT (see DSH entry above)
 - `@deepseek-ai/dsh-skill@0.0.1-rc.3` — BSD-3-Clause (see DSH entry above)
 - `@deepseek-ai/dsh-skill-filesystem@0.0.1-rc.3` — BSD-3-Clause (see DSH entry above)
+- `@earendil-works/pi-tui@1.5.2` — MIT (© 2025 Mario Zechner / earendil-works;
+  see the pi-tui entry above)
 - `tsx@4.23.13` — MIT (Hiroki Osame)
 - `undici@8.10.2` — MIT (Node.js project; no author field in manifest)
 

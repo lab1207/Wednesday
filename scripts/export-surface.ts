@@ -37,8 +37,6 @@ export const DENY = [
   /^site\//,
   /^wednesday-theme\//,
   /^AGENTS\.md$/,
-  /^factory\/harness\/BUGS\.md$/,
-  /^factory\/harness\/yc-demo-test\.ts$/,
   /^factory\/tmp\//,
   /(^|\/)\.env/,
   /(^|\/)state\//,

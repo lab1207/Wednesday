@@ -5,7 +5,7 @@
  * Three claims, three traps:
  *
  *   1. vLLM. The operator-facing scan (`/connect` ->
- *      `factory/harness/local-discovery.ts`) probes Ollama :11434, LM Studio
+ *      `factory/model-router/local-discovery.ts`) probes Ollama :11434, LM Studio
  *      :1234, llama.cpp :8080, a generic :1337 and the wednesday proxy
  *      :18090. It does NOT probe vLLM :8000. The model layer's shared
  *      candidate list (`factory/model-router/local-servers.ts`) DOES know
@@ -120,7 +120,7 @@ function occurrences(text: string, pattern: RegExp): Array<{ start: number; end:
 
 /** The ports the operator-facing `/connect` scan really probes. */
 function harnessScanPorts(): Set<string> {
-  const source = read('factory/harness/local-discovery.ts')
+  const source = read('factory/model-router/local-discovery.ts')
   const ports = new Set<string>()
   for (const match of source.matchAll(/127\.0\.0\.1:(\d+)/g)) ports.add(match[1]!)
   return ports

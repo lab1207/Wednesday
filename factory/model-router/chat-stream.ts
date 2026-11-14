@@ -198,8 +198,14 @@ export function resolveChatRoute(
     cleanModelID(hint, true) ||
     (env.DSH_LLM_MODEL ?? '').trim() ||
     ''
+  // HONOUR OPENROUTER_BASE_URL (2026-11-13): the connection list already read
+  // it (so /model listed a stub/proxy's catalogue), but the chat route
+  // hardcoded the public URL — a custom base answered /models yet every chat
+  // turn went to the real site and could sit unanswered indefinitely. One
+  // source of truth for the base, or the plate and the wire disagree.
+  const base = (env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1').replace(/\/+$/, '')
   return {
-    route: { name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: key, model },
+    route: { name: 'openrouter', baseURL: base, apiKey: key, model },
   }
 }
 

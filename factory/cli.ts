@@ -27,6 +27,7 @@ const VERBS = new Set([
   'cancel',
   'list',
   'scan',
+  'team',
 ])
 
 /**
@@ -47,8 +48,111 @@ const VERBS = new Set([
  *   wednesday scan --install-hook   install the gate into the target repo
  */
 async function scan(args: string[]): Promise<void> {
-  const { runScanCommand } = await import('./harness/scan-command')
+  const { runScanCommand } = await import('./scan/scan-command')
   process.exit(runScanCommand(args))
+}
+
+/**
+ * `wednesday team` — the operator's staffed team, without a terminal app.
+ *
+ * Choosing which model sits in which seat is the OPERATOR's decision, so it
+ * lives here and in the shared state home. The MCP server reads the same
+ * store and adopts the active crew at startup; nothing about the team is
+ * ever chosen by the calling agent.
+ *
+ *   wednesday team                     list the crews, active marked
+ *   wednesday team use <id|name>       make a crew active
+ *   wednesday team add <name> coder=model reviewer=model --shape solo
+ *   wednesday team show                the active crew in detail
+ */
+async function team(args: string[]): Promise<void> {
+  const store = await import('./teams/crew-store')
+
+  const [verb = 'list', ...rest] = args
+
+  if (verb === 'list') {
+    const crews = store.loadCrews()
+
+    if (crews.crews.length === 0) {
+      console.log('No crews yet. Add one: wednesday team add <name> coder=<model>')
+      return
+    }
+
+    for (const crew of crews.crews) {
+      const mark = crew.id === crews.active ? '*' : ' '
+      const seats = crew.seats.map(seat => `${seat.role}=${seat.model}`).join(' ')
+      const shape = crew.policy?.shape ?? 'auto'
+      console.log(`${mark} ${crew.id}  ${crew.name}  [${shape}]  ${seats}`)
+    }
+
+    return
+  }
+
+  if (verb === 'use') {
+    const wanted = rest[0]
+
+    if (!wanted) throw new Error('Missing crew id or name: wednesday team use <id|name>')
+
+    const crews = store.loadCrews()
+    const crew = crews.crews.find(item => item.id === wanted || item.name === wanted)
+
+    if (!crew) throw new Error(`No such crew: ${wanted}`)
+
+    store.setActiveCrew(crew.id)
+    console.log(`active crew: ${crew.name} (${crew.id})`)
+
+    return
+  }
+
+  if (verb === 'add') {
+    const name = rest[0]
+    const seats = rest.slice(1).filter(item => !item.startsWith('--'))
+
+    if (!name || seats.length === 0) {
+      throw new Error('Usage: wednesday team add <name> role=model [role=model...] [--shape solo|auto|duel|vote|relay]')
+    }
+
+    const parsed = seats.map(seat => {
+      const at = seat.indexOf('=')
+
+      if (at <= 0) throw new Error(`A seat must be role=model, got: ${seat}`)
+
+      return { role: seat.slice(0, at), model: seat.slice(at + 1) }
+    })
+
+    const shapeAt = rest.indexOf('--shape')
+    const shape = shapeAt >= 0 ? rest[shapeAt + 1] : undefined
+
+    const crew = store.addCrew(
+      name,
+      parsed,
+      shape ? { shape } : undefined,
+    )
+
+    store.setActiveCrew(crew.id)
+    console.log(`added and activated: ${crew.name} (${crew.id})`)
+
+    return
+  }
+
+  if (verb === 'show') {
+    const crew = store.activeCrew()
+
+    if (!crew) {
+      console.log('No active crew. Every seat runs on the route default.')
+      return
+    }
+
+    console.log(`${crew.name} (${crew.id})`)
+
+    for (const seat of crew.seats) console.log(`  ${seat.role.padEnd(10)} ${seat.model}`)
+
+    for (const line of store.crewPolicyLines(crew.policy)) console.log(`  ${line}`)
+
+    return
+  }
+
+  throw new Error(`Unknown team command: ${verb}`)
 }
 
 function spawnHermes(verb: string, args: string[], timeoutMs: number) {
@@ -147,9 +251,16 @@ factory — operator CLI over the Hermes/Factory contracts (roadmap 11A)
   retry  --id <taskId>
   cancel --id <taskId>
   list   [--status queued|running|completed|failed|cancelled]
+  scan   [--repo DIR] [--allow-findings] [--install-hook]
+
+  team                      list the crews (active marked)
+  team use <id|name>        make a crew active
+  team add <name> role=model [role=model...] [--shape solo|auto|duel|vote|relay]
+  team show                 the active crew in detail
 
 Add --json to any command for machine-readable output (raw Hermes JSON).
 Config: HERMES_TASKS_PATH, FACTORY_EVENTS_PATH, FACTORY_EXECUTION_MODE.
+The MCP server adopts the active crew at startup: connect any harness to it.
 `)
   process.exit(0)
 }
@@ -170,6 +281,11 @@ async function main(): Promise<void> {
 
   if (verb === 'scan') {
     await scan(rest)
+    return
+  }
+
+  if (verb === 'team') {
+    await team(rest)
     return
   }
 

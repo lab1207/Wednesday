@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { redactSensitiveText, secretValues } from './redaction.js'
 import { redactSecrets } from '../dsh-worker/secret-redaction.js'
-import { safeError } from '../harness/config.js'
+import { safeError } from '../config.js'
 
 const env = {
   ACME_API_KEY: 'acme-secret-value-xyz-789',

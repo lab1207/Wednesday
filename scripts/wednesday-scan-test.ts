@@ -265,7 +265,7 @@ async function main(): Promise<void> {
     const {
       allowlistedPaths,
       scanStaged,
-    } = await import('../factory/harness/commit-scan')
+    } = await import('../factory/scan/commit-scan')
 
     const dir = makeRepo()
     try {

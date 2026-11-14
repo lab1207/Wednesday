@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 // THE TEST'S OWN STATE HOME (must be first: it sets the env var before
 // `factory/paths.ts` is evaluated, so the MCP registry is the test's own).
-import '../harness/test-state-home.js'
+import '../test-state-home.js'
 
 import { addMcpServer, recordMcpServerState } from './config.js'
 import { mcpChatToolOptions } from './tools.js'

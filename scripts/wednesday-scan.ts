@@ -8,7 +8,7 @@
  * hook needs no install path and no PATH lookup, and the hook's gate and a
  * user's gate are the same implementation and cannot drift.
  */
-import { printReport, repoRoot, scanStaged } from '../factory/harness/commit-scan'
+import { printReport, repoRoot, scanStaged } from '../factory/scan/commit-scan'
 
 const allow =
   process.argv.includes('--allow-findings') ||

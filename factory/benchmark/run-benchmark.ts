@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 
-import { loadConfig, requireLiveConfig } from '../harness/config'
+import { loadConfig, requireLiveConfig } from '../config'
 
 /**
  * V1.6 benchmark runner CLI.

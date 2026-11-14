@@ -32,9 +32,9 @@ prints PASS/FAIL):
 
 | Area | Command |
 | --- | --- |
-| TUI / rendering | `npx tsx factory/harness/screen-test.ts` |
-| Approval gate + pipeline | `npx tsx factory/harness/harness-test.ts` |
-| Connect / model routing | `npx tsx factory/harness/connect-test.ts` |
+| MCP surface | `npx tsx factory/mcp/server-test.ts` |
+| Operator CLI + teams | `npx tsx factory/teams/crew-store-test.ts` |
+| Routes and keys | `npx tsx factory/config-test.ts` |
 | Orchestrator | `npx tsx factory/orchestrator/test.ts` |
 
 Paste the PASS lines from the suites you ran into your PR description. A PR
@@ -58,7 +58,9 @@ that changes behavior without a test for it will be sent back.
 Look for the `good first issue` label. The best entry points right now:
 
 - benchmark adapters (`factory/benchmark/`)
-- TUI polish and accessibility (`factory/harness/`)
+- `wednesday setup` — client registration for Claude Code, Codex, Cursor and
+  OpenCode (`factory/mcp/`)
+- team and crew UX in the operator CLI (`factory/teams/`)
 - docs, examples, and reproducible demo projects
 
 ## Ground rules

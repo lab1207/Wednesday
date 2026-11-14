@@ -189,5 +189,5 @@ if (args.has('--git')) {
 
 console.log(`PUBLIC EXPORT: PASS — ${copied} tracked files copied to ${relative(root, staging)}`)
 console.log(`  files in export: ${files.length}`)
-console.log('  excluded: docs/, site/, wednesday-theme/, AGENTS.md, factory/harness/BUGS.md')
+console.log('  excluded: docs/, site/, wednesday-theme/, AGENTS.md')
 if (!args.has('--git')) console.log('  next: run with --git to overlay-publish one commit to the public repo')

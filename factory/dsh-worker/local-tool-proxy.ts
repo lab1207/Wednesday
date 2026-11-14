@@ -23,7 +23,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Agent, fetch as upstreamFetch } from 'undici'
-import { loadConfig } from '../harness/config'
+import { loadConfig } from '../config'
 import { redactSecrets } from './secret-redaction'
 
 const DEFAULT_PORT = 18090
