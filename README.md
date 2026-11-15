@@ -1,17 +1,18 @@
 # Wednesday
 
-**One tool call. A whole engineering team behind it.**
+**One MCP tool in. A whole verified engineering team inside.**
 
 [![website](https://img.shields.io/badge/website-wednesdaylabs.pages.dev-5D43A0)](https://wednesdaylabs.pages.dev/)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
+[![MCP](https://img.shields.io/badge/MCP-stdio-5C4EE5)](https://modelcontextprotocol.io)
 [![tests](https://img.shields.io/badge/locked%20test-PASS-brightgreen)](CONTRIBUTING.md#tests)
 
 Wednesday is a free, open-source (Apache 2.0) **MCP server** that turns a
 plain-language request into planned, verified engineering work. You connect it
 to the harness you already use — Claude Code, Codex, Cursor, OpenCode, Claude
 Desktop — and Wednesday staffs a whole team behind it: planning, engineering
-roles, real verification, and repair until the tests pass. You bring the model,
+roles, real verification, and repair until the tests pass. You bring the models,
 hosted or running on your own hardware.
 
 **Small open models, staffed as a coding team.**
@@ -29,14 +30,11 @@ That is deliberate, and it is the whole design:
 
 The seats — architect, planner, coder, tester, reviewer, vision, bug-hunter,
 security-audit — are not callable from outside. If the host model could call
-`coder`, it would become the team lead and the small-model team would become
-day labour: progress that destroys the point. So the surface is coarse on
-purpose, and the test suite asserts that no seat is exposed.
+`coder`, it would become the team lead and the small-model team would become day
+labour: progress that destroys the point. So the surface is coarse on purpose,
+and the test suite asserts that no seat is exposed.
 
-## Install
-
-The MCP server ships on `master` today; npm `0.2.0-beta.6` predates it, so
-install from source until the next release:
+## Quick start
 
 ```bash
 git clone https://github.com/lab1207/Wednesday.git
@@ -45,14 +43,16 @@ npm install
 npm link                 # puts `wednesday` and `wednesday-mcp` on your PATH
 ```
 
-**Requirements:** Node.js **24 or newer** on Windows, macOS, or Linux, and a
+On macOS/Linux, `./install.sh` does the clone, install and link in one step.
+
+**Requirements:** Node.js **24 or newer** on Windows, macOS or Linux, and a
 model backend — your own OpenRouter/NVIDIA NIM key, or a local
 OpenAI-compatible server (Ollama `:11434`, LM Studio `:1234`, llama.cpp
 `:8080`, vLLM `:8000`, any local server on `:1337`).
 
 `wednesday setup` — one command that registers the server into each client and
 backs up what it touches — is the next piece of work. Until then, add the
-config by hand (below).
+config by hand (below), or use the repo-root [`mcp.json`](mcp.json).
 
 ## Connect your harness
 
@@ -100,14 +100,7 @@ Then say what you want built, or use the prompt — most clients surface it as
 is the reliable path: it injects the hand-off instruction instead of hoping the
 model picks the tool.
 
-## What a run looks like
-
-```text
-you → harness → wednesday_run("add a quantity input to the cart page")
-                 ↳ job accepted, id 3f9c…, workspace validated
-harness → wednesday_wait(id)      ↳ working: planner, coder, verification…
-harness → wednesday_result(id)    ↳ completed, tests PASS, files, receipt
-```
+## The MCP surface
 
 | Tool | Job |
 | --- | --- |
@@ -123,6 +116,13 @@ The client's own tool timeout is why `wait` exists at all: a nine-minute run
 delivered as one blocking call would be reaped and look like a crash. `wait`
 also emits `notifications/progress` when the request carries a
 `progressToken`, so a client can show the team moving.
+
+```text
+you → harness → wednesday_run("add a quantity input to the cart page")
+                  ↳ job accepted, id 3f9c…, workspace validated
+harness → wednesday_wait(id)      ↳ working: planner, coder, verification…
+harness → wednesday_result(id)    ↳ completed, tests PASS, files, receipt
+```
 
 ## Staff the team
 
@@ -141,22 +141,7 @@ A crew carries seats, per-seat models, and a shape: `solo`, `duel`, `vote`,
 `relay`, or `auto` (task difficulty decides), plus repair cap and budget. It
 lives as plain JSON in `~/.wednesday/state/crews.json`.
 
-## The operator CLI
-
-The same engine, without a client open:
-
-| Verb | What it does |
-| --- | --- |
-| `wednesday create --objective "…"` | Register a task (Hermes is the task store). |
-| `wednesday run <id>` | Run it through plan → build → verify → repair → review. |
-| `wednesday watch <id>` / `status` / `events` / `result` | Live stages, current state, event log, receipt. |
-| `wednesday list` / `retry` / `cancel` | The queue and its controls. |
-| `wednesday team …` | Staff the seats (above). |
-| `wednesday scan …` | The commit-time security gate (below). |
-
-Add `--json` to any verb for machine-readable output.
-
-## Why Wednesday
+## How a run works
 
 A model on its own guesses. Wednesday wraps it in a process that cannot skip the
 checks:
@@ -172,7 +157,7 @@ checks:
 
 Nothing is committed for you. Over MCP the team runs unattended inside its
 workspace; a harness-side approval gate wired to MCP elicitation is not built
-yet, and the README will say so until it is.
+yet, and this README will say so until it is.
 
 ### Verification is authoritative
 
@@ -241,22 +226,13 @@ seats ride the slot mapping, because a box that holds one Q4 model at a time
 cannot run two: give a seat `FACTORY_CREW_<SEAT>_BASE_URL` (or
 `FACTORY_CREW_<SEAT>_MODEL`) and it wears its roster model.
 
-The SECURITY AUDIT seat runs the operator's prompt verbatim — *"Act as an
-aggressive senior security engineer and penetration tester. Review this
-generated code for hidden memory leaks, security vulnerabilities (like XSS or
-injection), and edge cases where it might crash. List them out."* — followed
-by a FOUND / NOT FOUND checklist, because a 2B model given an open-ended
-prompt returns three generic warnings and given a fixed list returns something
-you can act on.
-
 ### Context window
 
 Two numbers, and the **smaller one wins**. The registry gives the **model's**
 own ceiling — Qwen2.5-Coder-3B is a 32K model — while the server gives the
-**deployment's** real window: the benchmark Colab T4 box serves that model in
-a 13,312-token window, and a memory-tight local server can be smaller still.
-A prompt that does not fit is trimmed in the middle (head and tail survive)
-instead of being cut off at the end.
+**deployment's** real window: a Colab T4 box serving that model runs a
+13,312-token window. A prompt that does not fit is trimmed in the middle (head
+and tail survive) instead of being cut off at the end.
 
 ### What a run costs
 
@@ -316,13 +292,27 @@ directory; a package that tries to write outside its own folder is refused.
 
 ## MCP servers you attach
 
-Wednesday speaks MCP itself (`initialize`, `tools/list`, `tools/call`) over
-stdio and Streamable HTTP, with no extra dependency. Attached servers are
-listed in `~/.wednesday/state/mcp.json`; their tools ride a request as
-`mcp__<server>__<tool>` and a call runs on the server that owns it. A model that
-is not known to do native tool calls is never offered any. A server's `env` and
-`headers` can hold a token: the values are stored on your machine and **never
-printed**.
+Wednesday can also act as an MCP **client**. Attached servers are listed in
+`~/.wednesday/state/mcp.json`; their tools ride a request as
+`mcp__<server>__<tool>` and a call runs on the server that owns it. A server may
+speak stdio or Streamable HTTP. A model that is not known to do native tool
+calls is never offered any. A server's `env` and `headers` can hold a token: the
+values are stored on your machine and **never printed**.
+
+## The operator CLI
+
+The same engine, without a client open:
+
+| Verb | What it does |
+| --- | --- |
+| `wednesday create --objective "…"` | Register a task (Hermes is the task store). |
+| `wednesday run <id>` | Run it through plan → build → verify → repair → review. |
+| `wednesday watch <id>` / `status` / `events` / `result` | Live stages, current state, event log, receipt. |
+| `wednesday list` / `retry` / `cancel` | The queue and its controls. |
+| `wednesday team …` | Staff the seats (above). |
+| `wednesday scan …` | The commit-time security gate (below). |
+
+Add `--json` to any verb for machine-readable output.
 
 ## Local data
 
@@ -362,18 +352,45 @@ never "no vulnerability". Escape hatches are loud rather than silent —
 says it is now part of the history; `git commit --no-verify` bypasses
 everything.
 
+## Documentation
+
+- [docs/MCP.md](docs/MCP.md) — the MCP surface, the run lifecycle, crews and providers
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the engine behind the surface
+- [ROADMAP.md](ROADMAP.md) — where the project is going
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development setup, tests and PR rules
+- [SECURITY.md](SECURITY.md) — vulnerability disclosure
+
+## FAQ
+
+**Which clients can use Wednesday?**
+Any MCP client that can run a local stdio server: Claude Code, Codex, Cursor,
+OpenCode and Claude Desktop today.
+
+**Do I need a model account?**
+No. Wednesday is not a model host. Bring your own key for a hosted provider, or
+run a local OpenAI-compatible server and use no key at all.
+
+**Does it send my code anywhere?**
+No. Everything runs on your machine against the endpoint you configure. Keys
+stay in `~/.wednesday/.env`.
+
+**Can I call a specific role, like `coder`?**
+No, on purpose. The surface is coarse so the host model stays a messenger and
+the small-model team stays the team. See `docs/MCP.md`.
+
+**Is this a terminal app?**
+No. The terminal harness was retired on 2026-11-14. The product is the MCP
+server plus a small operator CLI.
+
 ## Open source, and only open source
 
 This repository is the free core — all of it. There is no hidden "pro" build
-and no license-flag gating: every feature in the npm package is in this repo,
-and everything here is Apache 2.0. Paid or commercial work, if it exists, is
-built and released separately and never lands in this repository.
+and no license-flag gating: everything here is Apache 2.0. Paid or commercial
+work, if it exists, is built and released separately and never lands in this
+repository.
 
-- npm: <https://www.npmjs.com/package/@lab1207/wednesday>
 - Website: <https://wednesdaylabs.pages.dev>
 - Issues: <https://github.com/lab1207/Wednesday/issues>
-- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- Roadmap: [`ROADMAP.md`](ROADMAP.md)
 - Security: [`SECURITY.md`](SECURITY.md)
 
 ## Developing Wednesday itself
@@ -382,7 +399,7 @@ built and released separately and never lands in this repository.
 npm install
 npx tsx factory/orchestrator/test.ts     # locked dispatch sequence — must PASS
 npx tsx factory/mcp/server-test.ts       # the MCP surface, end to end
-npx tsx factory/security/package-surface-test.ts
+npx tsx scripts/public-claims-test.ts    # README + site claims stay honest
 npx tsx factory/security/redaction-test.ts
 ```
 
@@ -391,12 +408,11 @@ See `CONTRIBUTING.md` for the test map, issue/PR rules, and the ground rules
 
 ## Status
 
-**Beta, 2026-11-14.** The terminal harness was retired on this date: the product
-is the MCP server plus a small operator CLI. The engine behind it — plan,
-build, real verification, repair until green, review, per-seat receipts,
-central secret redaction, shell-free fenced tools — is unchanged and still
-guarded by the same tests. Next: `wednesday setup`, one live run inside a real
-harness, then a release that puts the server on npm.
+**Beta.** The product is the MCP server plus a small operator CLI; the terminal
+harness was retired on 2026-11-14. The engine behind it — plan, build, real
+verification, repair until green, review, per-seat receipts, central secret
+redaction, shell-free fenced tools — is unchanged and still guarded by the same
+tests. Next: `wednesday setup`, one live run inside a real harness.
 
 Licensed under [Apache 2.0](LICENSE). Third-party notices:
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

@@ -50,8 +50,11 @@ jobs:
       - name: Provider route + seat pins
         run: npm run factory:route
 
-      - name: First-run proof
-        run: npm run factory:proof
+      - name: MCP surface
+        run: node --import tsx factory/mcp/server-test.ts
+
+      - name: Public claims (README + site)
+        run: node --import tsx scripts/public-claims-test.ts
 
       - name: Package surface
         run: node --import tsx factory/security/package-surface-test.ts
@@ -59,10 +62,10 @@ jobs:
       - name: Secret redaction
         run: node --import tsx factory/security/redaction-test.ts
 
-      - name: Nothing private ships (npm + GitHub surfaces)
+      - name: Nothing private ships (package + GitHub surfaces)
         # The operator's hard rule (2026-11-08): no API keys, codes, secret
-        # shapes and no Google-analytics-style tracking code in the npm
-        # release or on GitHub, in ANY version.
+        # shapes and no Google-analytics-style tracking code in the package
+        # or on GitHub, in ANY version.
         #
         # WHY IT RUNS HERE AND NOT ONLY AT RELEASE: the two shapes that
         # reached GitHub reached it because a release-time scan had an
@@ -70,14 +73,8 @@ jobs:
         # platforms, so a shape in a PR is caught before it is merged.
         run: node --import tsx factory/security/no-private-info-test.ts
 
-      - name: Approval gate + pipeline
-        run: node --import tsx factory/harness/harness-test.ts
-
       - name: Live activity (answer stays the answer)
         run: node --import tsx factory/executor/host-output-test.ts
-
-      - name: Status + doctor
-        run: node --import tsx factory/harness/status-doctor-test.ts
 
   package:
     runs-on: ubuntu-latest

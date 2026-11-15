@@ -26,6 +26,20 @@ export const ALLOW_FILES = new Set([
   'THIRD_PARTY_LICENSES.md',
   'package.json',
   'package-lock.json',
+  // REA-style client surface: a repo-root MCP manifest a client can discover,
+  // and a source installer for macOS/Linux.
+  'mcp.json',
+  'install.sh',
+])
+
+/**
+ * Public documentation. docs/ is private by default (it holds internal
+ * planning, business notes and the build history), so a doc ships only when it
+ * is named here. Add a path deliberately, never widen the rule.
+ */
+export const ALLOW_DOCS = new Set([
+  'docs/MCP.md',
+  'docs/ARCHITECTURE.md',
 ])
 
 /** Directory roots that are allowed into the public repository. */
@@ -48,8 +62,9 @@ export const DENY = [
 
 /** Is this repository-relative path part of the public surface? */
 export function allowed(file: string): boolean {
+  // Exact allowlist first: a named public doc beats the docs/ deny.
+  if (ALLOW_FILES.has(file) || ALLOW_DOCS.has(file)) return true
   if (DENY.some(rx => rx.test(file))) return false
-  if (ALLOW_FILES.has(file)) return true
   return ALLOW_DIRS.some(dir => file.startsWith(dir))
 }
 

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wednesday": {
+      "command": "node",
+      "args": ["bin/wednesday-mcp.js"]
+    }
+  }
+}

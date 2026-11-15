@@ -1,7 +1,7 @@
 {
   "name": "@lab1207/wednesday",
   "version": "0.2.0-beta.6",
-  "description": "Free, open-source terminal harness that staffs small open models as a coding team: plan, approve, build, real tests, repair until green.",
+  "description": "Free, open-source MCP server that staffs small open models as a verified coding team: plan, build, real tests, repair until green.",
   "license": "Apache-2.0",
   "author": "Vaibhav Hajare (lab1207)",
   "homepage": "https://wednesdaylabs.pages.dev",
@@ -13,14 +13,14 @@
     "url": "https://github.com/lab1207/Wednesday/issues"
   },
   "keywords": [
+    "mcp",
+    "mcp-server",
     "ai",
     "ai-agents",
     "agentic-coding",
     "coding-agent",
     "coding-assistant",
-    "terminal",
     "cli",
-    "tui",
     "llm",
     "local-llm",
     "ollama",
