@@ -45,7 +45,14 @@ function repoRoot(): string {
 const ROOT = repoRoot()
 const read = (file: string): string => readFileSync(join(ROOT, file), 'utf8')
 
-const FILES = ['README.md', 'site/index.html'] as const
+const CANDIDATES = ['README.md', 'site/index.html'] as const
+/**
+ * The public repo ships README.md but not site/ (the site is private). The
+ * test therefore checks every surface that is present, not a hard-coded two:
+ * a missing site is a smaller check, never a failed one.
+ */
+const FILES = CANDIDATES.filter(name => existsSync(join(ROOT, name)))
+assert.ok(FILES.includes('README.md'), 'README.md must exist')
 
 /**
  * A block of published text: one paragraph, one markdown table row, one list
@@ -326,7 +333,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log('public-claims: PASS')
+  console.log(`public-claims: PASS (${FILES.join(', ')})`)
 }
 
 main().catch(err => {
