@@ -33,6 +33,25 @@ or run `./install.sh` (macOS/Linux), which clones, installs and links.
 
 ## Register with a client
 
+One command registers every harness it finds on the machine:
+
+```bash
+wednesday setup                     # every client found
+wednesday setup --dry-run           # plan only, nothing written
+wednesday setup --all               # also create configs for absent clients
+wednesday setup --client codex      # one client (repeatable or comma-separated)
+```
+
+What it registers is an absolute command — `node <checkout>/bin/wednesday-mcp.js` —
+so it works without a global link and without the Windows `.cmd` shim problem.
+Each file is backed up as `<file>.wednesday-backup-<timestamp>` before it is
+written, and a file that is not strict JSON is reported and left untouched.
+`claude` and `opencode` are registered through their own `mcp add` command when
+those CLIs are installed; Claude Desktop, Cursor and Codex are written directly.
+Pass `--command "wednesday-mcp"` to register a globally linked bin instead.
+
+By hand:
+
 **Claude Code**
 
 ```bash

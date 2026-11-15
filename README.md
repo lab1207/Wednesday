@@ -50,11 +50,33 @@ model backend — your own OpenRouter/NVIDIA NIM key, or a local
 OpenAI-compatible server (Ollama `:11434`, LM Studio `:1234`, llama.cpp
 `:8080`, vLLM `:8000`, any local server on `:1337`).
 
-`wednesday setup` — one command that registers the server into each client and
-backs up what it touches — is the next piece of work. Until then, add the
-config by hand (below), or use the repo-root [`mcp.json`](mcp.json).
+Then connect it:
+
+```bash
+wednesday setup
+```
+
+One command, every harness it finds — see [Connect your harness](#connect-your-harness).
 
 ## Connect your harness
+
+`wednesday setup` registers the server and prints exactly what it changed:
+
+```bash
+wednesday setup                     # every client found on this machine
+wednesday setup --dry-run           # print the plan, write nothing
+wednesday setup --all               # also create configs for clients not installed
+wednesday setup --client cursor     # one client
+```
+
+It registers `node <this checkout>/bin/wednesday-mcp.js` — an absolute command,
+so it does not need `wednesday-mcp` on `PATH` and does not depend on a Windows
+`.cmd` shim. Every file is backed up before it is touched, and a file that is
+not strict JSON is reported and left alone. `claude` and `opencode` are
+registered through their own `mcp add` command when those CLIs exist; Claude
+Desktop, Cursor and Codex are written directly.
+
+By hand, if you prefer:
 
 **Claude Code**
 

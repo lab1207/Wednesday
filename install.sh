@@ -77,12 +77,14 @@ fi
 cat <<'EOF'
 
 Next:
+  wednesday setup
+  # registers the MCP server with every harness it finds (Claude Code,
+  # Claude Desktop, Codex, Cursor, OpenCode), backing up each file it touches.
+  #   wednesday setup --dry-run   print the plan, write nothing
+  #   wednesday setup --all       also create configs for clients not installed
+
   wednesday team add demo coder=<model> reviewer=<model> --shape auto
   wednesday team use demo
-  claude mcp add wednesday -- wednesday-mcp
-  # or: opencode mcp add wednesday -- wednesday-mcp
-  # or add {"mcpServers":{"wednesday":{"command":"wednesday-mcp"}}} to
-  #     Claude Desktop / Cursor, and [mcp_servers.wednesday] to Codex.
 
 See README.md and docs/MCP.md.
 EOF

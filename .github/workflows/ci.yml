@@ -53,6 +53,9 @@ jobs:
       - name: MCP surface
         run: node --import tsx factory/mcp/server-test.ts
 
+      - name: One-command registration (setup)
+        run: node --import tsx factory/setup-test.ts
+
       - name: Public claims (README + site)
         run: node --import tsx scripts/public-claims-test.ts
 

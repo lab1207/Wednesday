@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { redactSensitiveText } from './security/redaction'
+import type { ClientId } from './setup'
 
 /**
  * Operator CLI — Layer 1 control surface (roadmap 11A + 2026-09-17 addendum).
@@ -28,6 +29,7 @@ const VERBS = new Set([
   'list',
   'scan',
   'team',
+  'setup',
 ])
 
 /**
@@ -155,6 +157,93 @@ async function team(args: string[]): Promise<void> {
   throw new Error(`Unknown team command: ${verb}`)
 }
 
+/**
+ * `wednesday setup` — register the MCP server with the operator's harness.
+ *
+ * WHY A LOCAL VERB: registration writes a file on this machine. The Hermes
+ * task store has nothing to do with it, and making it a task would put
+ * onboarding behind the queue.
+ *
+ *   wednesday setup                     every detected harness
+ *   wednesday setup --client cursor     one of them
+ *   wednesday setup --all               also create configs for absent clients
+ *   wednesday setup --dry-run           print the plan, write nothing
+ *   wednesday setup --command "wednesday-mcp"   register a linked bin instead
+ */
+async function setup(args: string[]): Promise<void> {
+  const setupModule = await import('./setup')
+
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+wednesday setup — connect the MCP server to your harness
+
+  wednesday setup                        every client found on this machine
+  wednesday setup --client <id>          one client (repeatable or comma-separated)
+  wednesday setup --all                  every known client, detected or not
+  wednesday setup --dry-run              print the plan, write nothing
+  wednesday setup --command "<line>"     the command the client should launch
+                                         (default: node <this checkout>/bin/wednesday-mcp.js)
+
+  clients: claude-code | claude-desktop | codex | cursor | opencode
+
+  Every file is backed up before it is touched, and a file that is not
+  strict JSON is reported and left alone rather than rewritten.
+`)
+    return
+  }
+
+  const dryRun = args.includes('--dry-run')
+  const all = args.includes('--all')
+  const clients: string[] = []
+
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== '--client') continue
+
+    const value = args[index + 1]
+
+    if (!value) throw new Error('Missing a client after --client')
+
+    clients.push(...value.split(',').map(item => item.trim()).filter(Boolean))
+    index += 1
+  }
+
+  const known = ['claude-code', 'claude-desktop', 'codex', 'cursor', 'opencode']
+  const unknown = clients.filter(client => !known.includes(client))
+
+  if (unknown.length > 0) {
+    throw new Error(`Unknown client: ${unknown.join(', ')}. Known: ${known.join(', ')}`)
+  }
+
+  const commandAt = args.indexOf('--command')
+  const command = commandAt >= 0 ? setupModule.parseCommandLine(args[commandAt + 1] ?? '') : undefined
+
+  if (commandAt >= 0 && (!command || command.length === 0)) {
+    throw new Error('Missing a command after --command')
+  }
+
+  const outcome = setupModule.runSetup({
+    command: command ?? setupModule.defaultCommand(),
+    clients: clients.length > 0 ? clients as ClientId[] : undefined,
+    all,
+    dryRun,
+  })
+
+  const json = process.argv.includes('--json')
+
+  if (json) {
+    console.log(JSON.stringify({
+      ok: true,
+      dryRun,
+      command: outcome.command,
+      counts: outcome.counts,
+      results: outcome.results,
+    }, null, 2))
+    return
+  }
+
+  console.log(setupModule.formatOutcome(outcome, dryRun ? 'dry' : 'live'))
+}
+
 function spawnHermes(verb: string, args: string[], timeoutMs: number) {
   return spawnSync(process.execPath, [...process.execArgv, HERMES, verb, ...args], {
     encoding: 'utf8',
@@ -258,6 +347,9 @@ factory — operator CLI over the Hermes/Factory contracts (roadmap 11A)
   team add <name> role=model [role=model...] [--shape solo|auto|duel|vote|relay]
   team show                 the active crew in detail
 
+  setup [--client id] [--all] [--dry-run] [--command "<line>"]
+                            register the MCP server with your harness
+
 Add --json to any command for machine-readable output (raw Hermes JSON).
 Config: HERMES_TASKS_PATH, FACTORY_EVENTS_PATH, FACTORY_EXECUTION_MODE.
 The MCP server adopts the active crew at startup: connect any harness to it.
@@ -286,6 +378,11 @@ async function main(): Promise<void> {
 
   if (verb === 'team') {
     await team(rest)
+    return
+  }
+
+  if (verb === 'setup') {
+    await setup(rest)
     return
   }
 
