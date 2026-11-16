@@ -470,7 +470,7 @@ The MCP server adopts the active crew at startup: connect any MCP client to it.
   process.exit(0)
 }
 
-  await loadConfig()
+async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const verb = argv[0]
   if (!verb || verb === '--help' || verb === 'help') usage()
