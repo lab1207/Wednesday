@@ -158,6 +158,47 @@ export function applyCrew(crew: Crew): void {
 }
 
 /**
+ * The env keys a crew changes. Used to snapshot/restore a PER-RUN crew so a
+ * transient pool never leaks into the next job or the adopted default.
+ */
+const POLICY_ENV_KEYS = [
+  'FACTORY_EXPANSION',
+  'FACTORY_RELAY',
+  'FACTORY_MAX_REPAIR_ATTEMPTS',
+  'FACTORY_BUDGET_TOKENS',
+  'FACTORY_BUDGET_USD',
+] as const
+
+/** Capture every env slot `applyCrew` may touch. */
+export function crewEnvSnapshot(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const keys = [
+    ...CREW_ROLES.map(crewRoleEnvName),
+    ...POLICY_ENV_KEYS,
+  ]
+  const snapshot: Record<string, string | undefined> = {}
+  for (const key of keys) {
+    snapshot[key] = env[key]
+  }
+  return snapshot
+}
+
+/** Put the env back exactly as it was (including deleting keys that did not exist). */
+export function restoreCrewEnv(
+  snapshot: Record<string, string | undefined>,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete env[key]
+    } else {
+      env[key] = value
+    }
+  }
+}
+
+/**
  * Apply a crew's POLICY to the env the orchestrator reads (pure-ish).
  *
  * A crew used to be a name plus a list of models, so "how does this team

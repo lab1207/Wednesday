@@ -49,6 +49,16 @@ and the test suite asserts that no seat is exposed.
 
 ## Quick start
 
+Install straight from the public GitHub repo — the repo is the distribution
+channel; no npm release is involved:
+
+```bash
+npm install -g github:lab1207/Wednesday
+wednesday setup
+```
+
+Or work from a checkout:
+
 ```bash
 git clone https://github.com/lab1207/Wednesday.git
 cd Wednesday
@@ -146,6 +156,7 @@ model picks the tool.
 | `wednesday_cancel` | Stop a queued or running job. |
 | `wednesday_jobs` | This session's runs, newest first. |
 | `wednesday_team` | Read-only: the operator's crew and whether this connection adopted it. |
+| `wednesday_models` | Read-only: providers, configured/local models and seat roles this server can actually call. Never returns keys. |
 
 The client's own tool timeout is why `wait` exists at all: a nine-minute run
 delivered as one blocking call would be reaped and look like a crash. `wait`
@@ -184,6 +195,13 @@ A crew is adopted when the MCP server starts. Change it and the running server
 keeps its old roster until you reconnect — the `wednesday team` verbs say so,
 and `wednesday_team` reports `in_sync: false` rather than running a stale
 team behind your back.
+
+A single run can also bring its own pool: `wednesday_run` accepts `models` (up
+to nine provider-pinned ids) or `seats` (role → model). Wednesday assigns a
+pool to the seats by role, refuses a model whose provider it has no key for
+**before** the job is queued, records the team on the job, and restores your
+default crew after the run. `wednesday_models` shows what it can actually call;
+`local/` models need no key at all.
 
 ## How a run works
 
@@ -402,7 +420,7 @@ Advanced overrides: `WEDNESDAY_STATE_HOME` moves the state directory;
 wednesday/
 ├─ bin/                      wednesday + wednesday-mcp entry points
 ├─ factory/
-│  ├─ mcp/                   the MCP server: 7 coarse tools, no seats exposed
+│  ├─ mcp/                   the MCP server: 8 coarse tools, no seats exposed
 │  ├─ service.ts             FactoryService — the only execution path
 │  ├─ hermes/                Operations Manager and the task store
 │  ├─ orchestrator/          dispatch sequence and stage runner

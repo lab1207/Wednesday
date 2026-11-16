@@ -115,9 +115,11 @@ suite asserts that none can appear.
 | `wednesday_cancel` | Stop a queued or running job. |
 | `wednesday_jobs` | This session's runs, newest first. |
 | `wednesday_team` | Read-only: the operator's crew and whether this connection adopted it. |
+| `wednesday_models` | Read-only: providers, configured/local models and seat role names. Never returns keys. |
 
 `wednesday_run` accepts `request` (required) and optional `workspace`, `role`,
-`constraints`, `acceptance_criteria`, `tests` and `required_files`.
+`constraints`, `acceptance_criteria`, `tests`, `required_files`, `models` and
+`seats`.
 
 ### The run lifecycle
 
@@ -142,9 +144,10 @@ failed run with its own implementation.
 
 ## Staff the team
 
-The team is **the operator's decision, not the calling model's** — there is no
-tool to change it. Staff it once from the CLI; every MCP connection adopts the
-active crew at startup.
+The **default** team is the operator's decision. Staff it once from the CLI;
+every MCP connection adopts the active crew at startup. A caller may also
+bring a model pool to **one run** (below), but there is still no seat tool and
+no way for the host to rewrite the default roster.
 
 ```bash
 wednesday team                                   # list crews, active marked
@@ -165,6 +168,46 @@ A crew carries seats, per-seat models, a shape (`solo`, `duel`, `vote`,
 decides how the team works. A crew changed while a server is running does not
 change that server; the mutating verbs say so ("Restart the MCP server, or
 reconnect your client, to adopt it").
+
+### Per-run teams (2026-11-16)
+
+A caller may staff **one run** without touching the default crew:
+
+- `models` — up to 9 model IDs. Wednesday assigns all nine seats by role:
+  vision IDs go to `vision`, coder IDs to `coder`/`tester`/`bug-hunter`,
+  reasoning IDs to `architect`/`planner`/`reviewer`, guard IDs to
+  `security-audit`; ties go to the least-used model. Deterministic.
+- `seats` — explicit `{ "role": "provider/model" }` overrides on top.
+- Validation happens **before** the job is queued. IDs must be
+  provider-pinned (`openrouter/…`, `nvidia/…`, `zen/…`, `local/…`); a hosted
+  provider without its key is refused and the env var is named. MCP moves
+  requests, not credentials.
+- The team used is returned under `team` by `wednesday_run`,
+  `wednesday_status` and `wednesday_result`. The default roster is restored
+  when the job ends.
+- `wednesday_models` lists the providers, the configured/local model IDs and
+  the valid role names. Call it before choosing a pool.
+
+This is a deliberate operator decision (2026-11-16). It does not make a seat
+callable: the host still sends one request to `wednesday_run`, and the server
+owns the assignment.
+
+### No key at all: a local model
+
+The `local/` provider is any OpenAI-compatible server (Ollama, LM Studio,
+llama.cpp, a tunnel). It needs **no key**:
+
+```bash
+# in ~/.wednesday/.env
+FACTORY_LLM_PROVIDER=local
+LOCAL_LLM_BASE_URL=http://127.0.0.1:11434/v1
+LOCAL_LLM_MODEL=qwen2.5-coder:3b
+```
+
+Pin seats to it as `local/<model>` — for example
+`wednesday team add local coder=local/qwen2.5-coder:3b tester=local/qwen2.5-coder:3b --shape solo`.
+`wednesday_models` reports what the local server actually answers, so the
+operator never has to guess an ID.
 
 ## Operator CLI
 

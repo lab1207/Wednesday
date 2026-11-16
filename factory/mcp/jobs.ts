@@ -32,6 +32,22 @@ import {
 } from '../hermes/store'
 
 import {
+  activeCrew,
+  applyCrew,
+  crewEnvSnapshot,
+  restoreCrewEnv,
+  type CrewSeat,
+} from '../teams/crew-store'
+
+import {
+  assignPool,
+  checkModels,
+  mergeSeats,
+  normalizeSeatList,
+  parseSeatOverrides,
+} from '../teams/model-pool'
+
+import {
   PersistentFactoryEventBus,
 } from '../events'
 
@@ -63,6 +79,13 @@ export interface RunRequest {
   acceptanceCriteria?: string[]
   tests?: string[]
   requiredFiles?: string[]
+  /**
+   * Optional model pool for THIS run. Wednesday assigns the seats. The
+   * operator's active crew stays the default; a pool is recorded on the job.
+   */
+  models?: string[]
+  /** Optional explicit role -> model overrides, applied on top of the pool. */
+  seats?: Record<string, unknown>
 }
 
 export interface Job {
@@ -77,6 +100,12 @@ export interface Job {
   hermesTaskId?: string
   result?: EngineeringResult
   error?: string
+  /** The per-run team, when the caller supplied a pool or explicit seats. */
+  team?: {
+    source: 'operator' | 'pool' | 'seats' | 'mixed'
+    pool?: string[]
+    seats: CrewSeat[]
+  }
 }
 
 /** A job plus what the team is doing right now. */
@@ -91,6 +120,8 @@ interface JobRecord {
   controller: AbortController
   /** Cancelled while queued: the run is skipped, never submitted. */
   cancelled: boolean
+  /** A transient roster applied for this job only, then restored. */
+  crewSeats?: CrewSeat[]
 }
 
 const jobs = new Map<string, JobRecord>()
@@ -156,6 +187,54 @@ export async function submitRun(
     throw new Error(`Workspace is not a directory: ${workspace}`)
   }
 
+  const pool = [
+    ...new Set(
+      (input.models ?? [])
+        .map(model => model.trim())
+        .filter(Boolean),
+    ),
+  ]
+
+  if (pool.length > 9) {
+    throw new Error('A run pool can name at most 9 models (one per seat).')
+  }
+
+  const overrides = parseSeatOverrides(input.seats)
+
+  if (overrides.errors.length > 0) {
+    throw new Error(overrides.errors.join('; '))
+  }
+
+  const accessErrors = checkModels(
+    [...pool, ...overrides.seats.map(seat => seat.model)],
+    process.env,
+  )
+
+  if (accessErrors.length > 0) {
+    throw new Error(
+      `Model not reachable by Wednesday: ${accessErrors.join('; ')}`,
+    )
+  }
+
+  const active = activeCrew()
+
+  const base =
+    pool.length > 0
+      ? assignPool(pool)
+      : normalizeSeatList(active?.seats ?? [])
+
+  const crewSeats =
+    pool.length > 0 || overrides.seats.length > 0
+      ? mergeSeats(base, overrides.seats)
+      : undefined
+
+  const source: 'operator' | 'pool' | 'seats' | 'mixed' =
+    pool.length > 0 && overrides.seats.length > 0
+      ? 'mixed'
+      : pool.length > 0
+        ? 'pool'
+        : 'seats'
+
   const timestamp = nowIso()
 
   const job: Job = {
@@ -167,6 +246,15 @@ export async function submitRun(
     createdAt: timestamp,
     updatedAt: timestamp,
     elapsedMs: 0,
+    ...(crewSeats
+      ? {
+          team: {
+            source,
+            ...(pool.length > 0 ? { pool } : {}),
+            seats: crewSeats,
+          },
+        }
+      : {}),
   }
 
   const record: JobRecord = {
@@ -192,6 +280,7 @@ export async function submitRun(
     },
     controller: new AbortController(),
     cancelled: false,
+    ...(crewSeats ? { crewSeats } : {}),
   }
 
   jobs.set(job.id, record)
@@ -223,6 +312,20 @@ async function execute(
   job.updatedAt = nowIso()
 
   const startedAt = Date.now()
+
+  // A per-run roster is transient. The job queue is sequential (see the
+  // module header), so changing the process env here cannot race another
+  // run; the snapshot is restored before the next job starts.
+  const crewSnapshot = record.crewSeats ? crewEnvSnapshot() : null
+
+  if (record.crewSeats) {
+    applyCrew({
+      id: `run:${job.id}`,
+      name: 'per-run model pool',
+      seats: record.crewSeats,
+      ...(activeCrew()?.policy ? { policy: activeCrew()!.policy } : {}),
+    })
+  }
 
   try {
     const task: EngineeringTask = {
@@ -278,6 +381,10 @@ async function execute(
 
     job.error = messageOf(error)
   } finally {
+    if (crewSnapshot) {
+      restoreCrewEnv(crewSnapshot)
+    }
+
     job.elapsedMs = Date.now() - startedAt
     job.updatedAt = nowIso()
   }

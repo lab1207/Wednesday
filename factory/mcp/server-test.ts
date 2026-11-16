@@ -283,6 +283,7 @@ async function main(): Promise<void> {
     assert.deepEqual(names, [
       'wednesday_cancel',
       'wednesday_jobs',
+      'wednesday_models',
       'wednesday_result',
       'wednesday_run',
       'wednesday_status',
@@ -307,6 +308,53 @@ async function main(): Promise<void> {
     assert.equal(team.payload.in_sync, true)
     assert.equal(team.payload.selected.seats.length, 2)
     assert.equal(team.payload.selected.policy.shape, 'solo')
+
+    // --- the caller can see what this server can actually call -----------
+    const models = await client.call('wednesday_models', {})
+
+    assert.equal(models.isError, false)
+    assert.ok(Array.isArray(models.payload.roles))
+    assert.ok(models.payload.roles.includes('coder'))
+    assert.ok(Array.isArray(models.payload.providers))
+    assert.ok(
+      models.payload.providers.some(
+        (provider: { provider: string }) => provider.provider === 'local',
+      ),
+    )
+
+    // --- a bad seat role is refused before a job is queued ---------------
+    const badSeats = await client.call('wednesday_run', {
+      request: 'build something',
+      workspace,
+      seats: { wizard: 'local/nope' },
+    })
+
+    assert.equal(badSeats.isError, true)
+    assert.ok(
+      String(badSeats.payload).includes('Unknown seat role'),
+      String(badSeats.payload),
+    )
+
+    // --- a per-run pool is accepted and recorded on the job ----------------
+    const pooled = await client.call('wednesday_run', {
+      request: 'create pooled.txt',
+      workspace,
+      models: ['local/test-model'],
+    })
+
+    assert.equal(pooled.isError, false)
+    assert.equal(pooled.payload.team.source, 'pool')
+    assert.deepEqual(pooled.payload.team.pool, ['local/test-model'])
+    assert.equal(pooled.payload.team.seats.length, 9)
+    assert.ok(
+      pooled.payload.team.seats.every(
+        (seat: { model: string }) => seat.model === 'local/test-model',
+      ),
+    )
+
+    await client.call('wednesday_cancel', {
+      job_id: pooled.payload.job_id,
+    })
 
     // --- the prompt turns any harness into a messenger -------------------
     const prompts = await client.request('prompts/list')

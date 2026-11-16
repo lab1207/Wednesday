@@ -38,6 +38,15 @@ import {
   applyCrew,
 } from '../teams/crew-store'
 
+import {
+  CREW_ROLES,
+  LOCAL_DEFAULT_BASE_URL,
+} from '../model-router/crew-routing'
+
+import { listLocalModels } from '../model-router/local-servers'
+
+import { loadConfig } from '../config'
+
 import type { Job, JobView, RunRequest } from './jobs'
 
 // ---------------------------------------------------------------------------
@@ -209,8 +218,39 @@ const TOOLS = [
           items: { type: 'string' },
           description: 'Files the run must touch or produce.',
         },
+        models: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 9,
+          description:
+            'Optional model pool for this run (up to 9). Wednesday assigns ' +
+            'the seats by role. Only models this server can actually call; ' +
+            'call wednesday_models first. The operator\'s active crew remains ' +
+            'the default when this is omitted.',
+        },
+        seats: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            'Optional role -> model overrides for this run, applied on top of ' +
+            'models. Valid role names are listed by wednesday_models. The ' +
+            'override is recorded on the job and does not change the default crew.',
+        },
       },
       required: ['request'],
+    },
+  },
+  {
+    name: 'wednesday_models',
+    title: 'List the models Wednesday can call',
+    description:
+      'Read-only inventory: which providers have credentials, the configured ' +
+      'models, the models a local OpenAI-compatible server reports, and the ' +
+      'seat roles a run can name. Never returns keys. Call this before ' +
+      'passing a model pool to wednesday_run.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
   {
@@ -370,6 +410,17 @@ function stringList(
   return items.length > 0 ? items : undefined
 }
 
+function objectArg(
+  args: Record<string, unknown>,
+  name: string,
+): Record<string, unknown> | undefined {
+  const value = args[name]
+
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
 function numberArg(
   args: Record<string, unknown>,
   name: string,
@@ -402,6 +453,7 @@ function jobSummary(
     request: job.request,
     workspace: job.workspace,
     elapsed_ms: job.elapsedMs,
+    ...(job.team ? { team: job.team } : {}),
     ...(job.error ? { error: job.error } : {}),
   }
 }
@@ -457,6 +509,8 @@ async function callTool(
           args,
           'required_files',
         ),
+        models: stringList(args, 'models'),
+        seats: objectArg(args, 'seats'),
       }
 
       try {
@@ -475,6 +529,68 @@ async function callTool(
           true,
         )
       }
+    }
+
+    case 'wednesday_models': {
+      const baseURL =
+        process.env.LOCAL_LLM_BASE_URL?.trim() || LOCAL_DEFAULT_BASE_URL
+
+      const local = await listLocalModels(baseURL, 1500)
+
+      const split = (value: string | undefined): string[] =>
+        (value ?? '')
+          .split(',')
+          .map(item => item.trim())
+          .filter(Boolean)
+
+      const openrouter = [
+        process.env.DSH_LLM_MODEL,
+        process.env.FACTORY_ACTIVE_MODEL,
+        ...split(process.env.FACTORY_MODELS),
+        ...split(process.env.FACTORY_MODEL_POOL),
+      ].filter(
+        (model): model is string => Boolean(model && model.trim()),
+      )
+
+      const nvidia = [process.env.NVIDIA_LLM_MODEL, process.env.NVIDIA_MODEL]
+        .filter((model): model is string => Boolean(model && model.trim()))
+
+      const zen = [process.env.ZEN_MODEL]
+        .filter((model): model is string => Boolean(model && model.trim()))
+
+      return textResult({
+        roles: CREW_ROLES,
+        providers: [
+          {
+            provider: 'local',
+            ready: true,
+            base_url: baseURL,
+            models: local,
+            note:
+              local.length > 0
+                ? 'No key needed. Pin a seat as local/<model>.'
+                : 'No local server answered. Start one on base_url to use it without a key.',
+          },
+          {
+            provider: 'openrouter',
+            ready: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+            models: openrouter,
+          },
+          {
+            provider: 'nvidia',
+            ready: Boolean(process.env.NVIDIA_API_KEY?.trim()),
+            models: nvidia,
+          },
+          {
+            provider: 'zen',
+            ready: Boolean(process.env.ZEN_API_KEY?.trim()),
+            models: zen,
+          },
+        ],
+        note:
+          'Only a ready provider can run a pinned model. A pool never carries ' +
+          'credentials; add the key to ~/.wednesday/.env or use local.',
+      })
     }
 
     case 'wednesday_status': {
@@ -671,7 +787,9 @@ async function dispatch(
         instructions:
           'Wednesday is a staffed small-model engineering team. Send work with ' +
           'wednesday_run, follow it with wednesday_wait, read it with ' +
-          'wednesday_result. Do not do the work yourself.',
+          'wednesday_result. A run may name a models pool or explicit seats; ' +
+          'call wednesday_models to see what this server can actually call. ' +
+          'Do not do the work yourself.',
       }
 
     case 'ping':
@@ -840,6 +958,8 @@ async function loadVersion(): Promise<void> {
 
 async function main(): Promise<void> {
   await loadVersion()
+
+  await loadConfig()
 
   adoptTeam()
 
