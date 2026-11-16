@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { redactSensitiveText } from '../security/redaction'
 
@@ -51,12 +52,18 @@ function listArg(
 }
 
 async function submit(): Promise<void> {
+  const objectiveFile =
+    arg('--objective-file')
+
   const objective =
-    arg('--objective')
+    arg('--objective') ??
+    (objectiveFile
+      ? readFileSync(objectiveFile, 'utf8').trim()
+      : undefined)
 
   if (!objective) {
     throw new Error(
-      'Missing --objective',
+      'Missing --objective or --objective-file',
     )
   }
 
@@ -547,6 +554,7 @@ Hermes
 Commands:
 
   submit --objective "..."
+         [--objective-file <path>]   read the objective from a file (shell-safe)
          [--required-files "file1|file2"]
          [--tests "command1|command2"]
          [--acceptance "criterion1|criterion2"]

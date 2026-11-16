@@ -14,8 +14,9 @@ import type {
 /**
  * V1.5 — shared Hermes task store.
  *
- * Shared by the Hermes CLI and Factory terminal harness for persisted
- * task submission and supervised execution.
+ * Shared by the Hermes CLI and the MCP server for persisted task submission
+ * and supervised execution. This store is the operational source of truth
+ * for every run, whatever the caller was.
  */
 
 import { TASKS_PATH } from '../paths'
@@ -182,7 +183,7 @@ export async function submitTask(
 
 /**
  * Run a queued Hermes task through the Factory and persist the outcome.
- * Shared by the Hermes CLI (`run` verb) and the terminal harness.
+ * Shared by the Hermes CLI (`run` verb) and the MCP server.
  */
 export async function runHermesTask(
   hermesTaskId: string,

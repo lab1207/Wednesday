@@ -10,7 +10,7 @@
  *
  * WHAT THIS MODULE DOES NOT DO: it does not plan, route, or execute. Every
  * run goes through `submitTask` and `runHermesTask` - the SAME supervised
- * path the terminal harness uses. The architecture rule says Hermes ->
+ * path the operator CLI uses. The architecture rule says Hermes ->
  * FactoryService is the only execution path, and an MCP client is not an
  * exception to it.
  *

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { loadConfig, requireLiveConfig } from '../../harness/config'
+import { loadConfig, requireLiveConfig } from '../../config'
 
 /**
  * Public-board runner CLI (humaneval, aider, livecodebench, swebench, evalplus, swebench-verified, swebench-live, multi-swe wired).

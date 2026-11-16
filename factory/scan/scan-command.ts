@@ -4,12 +4,12 @@
  *
  * WHY ONE FILE: the gate has TWO callers and they must not drift. The
  * operator-facing command is `wednesday scan` — and `wednesday` is the
- * HARNESS bin (`bin/wednesday.js` imports `factory/harness/harness.ts`), not
- * `factory/cli.ts`. So the verb has to exist in the harness's argv parsing or
- * the operator's own command lands in the request parser and dies with
- * `Unknown option: --repo`. That is exactly what the first proof run showed:
- * the installed binary answered `startup health: OK ... Unknown option:
- * --repo`, because a scan request was read as a build request.
+ * OPERATOR CLI bin (`bin/wednesday.js` imports `factory/cli.ts`). So the
+ * verb has to exist in the CLI's argv parsing or the operator's own command
+ * lands in the request parser and dies with `Unknown option: --repo`. That
+ * is exactly what the first proof run showed: the installed binary answered
+ * `startup health: OK ... Unknown option: --repo`, because a scan request
+ * was read as a build request.
  *
  * `factory/cli.ts` forwards here too, so the internal verb and the
  * operator-facing verb are the same code.

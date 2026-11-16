@@ -59,6 +59,11 @@
   config:
     workspaceContext:
       maxBytes: 16384
+    # The bundle mounts the model-facing `bash` tool by default. It is
+    # registered explicitly below instead, because the shell a task actually
+    # runs in depends on the platform (see the shell block), and a bash-labelled
+    # tool driving PowerShell would teach the model the wrong command language.
+    toolBash: false
 
 # Request-pressure meter: prices session history against the routed model's
 # context window so compaction-basic knows when to summarize.
@@ -107,6 +112,9 @@
     mode: !!js "process.env.DSH_PERMISSION_MODE ?? 'workspace-write'"
     workspaceRoot: !!js "process.cwd()"
 
+- id: shell-env
+  name: '@deepseek-ai/dsh-shell-env'
+
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'
 
@@ -114,6 +122,39 @@
   name: '@deepseek-ai/dsh-bash-sandbox'
   config:
     timeoutMs: 60000
+  disabled: !!js "process.platform === 'win32'"
+
+# Windows shell: PowerShell, UNCONFINED, and here is why (2026-11-15).
+#
+# Every Windows command used to fail with `Access is denied. Error code:
+# Bash/Service/CreateInstance/E_ACCESSDENIED` — that is WSL's own error text,
+# not a Wednesday or DSH fault. `bash` on Windows resolves to
+# C:\Windows\System32\bash.exe, the WSL stub, and WSL cannot activate its
+# out-of-process COM service from inside the sandbox's write-restricted token.
+# Three candidates were probed against the ACL runner:
+#   - WSL bash (system `bash`)      -> CreateInstance/E_ACCESSDENIED, exit 1
+#   - Git Bash (MSYS)               -> "couldn't create signal pipe, Win32
+#                                      error 5", BOTH sandbox modes
+#   - powershell.exe / cmd.exe      -> work
+# and then the deeper limit surfaced: under that token a process can spawn
+# children with INHERITED or IGNORED stdio but never with PIPES (pin it with
+# `node -e "spawnSync(process.execPath,['-v'],{stdio:'pipe'})"` under
+# sandbox-windows-acl/lib/runner.js). dsh-sandbox-windows-acl's own suite pins
+# piped-stdio grandchild spawns as DENIED — the POC-documented "no output
+# redirection" boundary of WRITE_RESTRICTED tokens, upstream and intentional.
+# Every test runner spawns a piped child per file, so a CONFINED shell means a
+# coder that can never run `node --test` and burns turns asking whether its work
+# or the check is wrong.
+#
+# The trade is deliberate: on win32 the shell runs unconfined, and confinement
+# stays where it is enforced and tested — the file tools (fs-sandbox,
+# workspace-write, below). POSIX keeps the sandboxed bash untouched. Revisit if
+# the ACL backend grows a pipe-safe mode.
+- id: pwsh
+  name: '@deepseek-ai/dsh-pwsh-local'
+  config:
+    timeoutMs: 60000
+  disabled: !!js "process.platform !== 'win32'"
 
 - id: approval
   name: '@deepseek-ai/dsh-user-approval'
@@ -130,6 +171,16 @@
 
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
+
+# Model-facing shell tools, one per platform dialect. The executable behind
+# each is chosen by the shell block above; POSIX keeps bash verbatim.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js "process.platform === 'win32'"
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js "process.platform !== 'win32'"
 
 # Slice 1 of the capability plan (2026-09-21, reworked keyless): fetch-only
 # web tools. `web-fetch-http` is anonymous public HTTP(S) — no credential,

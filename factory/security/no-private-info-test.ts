@@ -227,7 +227,7 @@ function main (): void {
   //    WHY NOT THE WHOLE TREE: the internal build history and the defect
   //    ledger have to NAME the removed allowlist -- that is how a reader
   //    learns the defect existed and what replaced it. Those documents are
-  //    not shipped (docs/ and factory/harness/BUGS.md are excluded from
+  //    not shipped (docs/ and docs/HARNESS_BUG_LEDGER.md are excluded from
   //    both surfaces). A prose record of a removed mechanism is the
   //    opposite of a live exemption.
   const exemptToken = 'KNOWN_' + 'FAKE'

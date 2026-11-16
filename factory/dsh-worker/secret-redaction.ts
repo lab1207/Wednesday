@@ -3,8 +3,8 @@
 // upstream/credential) is scrubbed by VALUE from anything we print, plus the
 // host of the tunnel upstream. Lives in dsh-worker because host.ts and
 // local-tool-proxy.ts are deployed as their own unit and must not import from
-// factory/harness (layer rule). Keep the credential shapes in sync with
-// factory/security/redaction.ts (the harness/CLI side); both are covered by
+// the rest of factory/ (layer rule). Keep the credential shapes in sync with
+// factory/security/redaction.ts (the MCP/CLI side); both are covered by
 // tests so they cannot drift silently.
 
 const SECRET_NAME = /(_API_KEY|_TOKEN|_SECRET|_PASSWORD|_PASS|UPSTREAM|CREDENTIAL|PRIVATE_KEY)/i

@@ -156,12 +156,21 @@ crew at startup.
 wednesday team                                   # list crews, active marked
 wednesday team add demo coder=qwen/qwen3-coder reviewer=local/qwen2.5-coder-3b --shape auto
 wednesday team use demo                           # make it the active crew
+wednesday team seat coder another-model           # swap one seat of the active crew
+wednesday team set shape solo                     # shape | repairs | tokens | usd | test | files
 wednesday team show                               # seats, models, policy
+wednesday team delete demo                         # remove a crew
 ```
 
 A crew carries seats, per-seat models, and a shape: `solo`, `duel`, `vote`,
 `relay`, or `auto` (task difficulty decides), plus repair cap and budget. It
-lives as plain JSON in `~/.wednesday/state/crews.json`.
+lives as plain JSON in `~/.wednesday/state/crews.json`. `auto` is the default
+when a crew declares no shape.
+
+A crew is adopted when the MCP server starts. Change it and the running server
+keeps its old roster until you reconnect — the `wednesday team` verbs say so,
+and `wednesday_team` reports `in_sync: false` rather than running a stale
+team behind your back.
 
 ## How a run works
 

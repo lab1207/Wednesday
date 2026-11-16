@@ -20,8 +20,8 @@
  * that it is open source, that a crew of small open-source models staffs
  * it, and how a request becomes a verified build. Only the per-turn
  * model, provider, routing and pipeline counters stay hidden. The
- * harness also answers the plainest form of the question locally and
- * instantly, without a model call (see factory/harness/about.ts).
+ * operator-facing README and `wednesday team show` answer the plainest form
+ * of the question locally and instantly, without a model call.
  *
  * Zero-dependency by design: imported by role-runners (analysis +
  * coder + reviewer prompts) AND the executor (host task prompt)

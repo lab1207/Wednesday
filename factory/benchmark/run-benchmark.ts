@@ -12,10 +12,9 @@ import { loadConfig, requireLiveConfig } from '../config'
  *
  *   npx tsx factory/benchmark/run-benchmark.ts --fixture snippetbox --mode live
  *
- * Deterministic mode (default) proves the harness plumbing offline. Live mode
- * loads credentials from ~/.wednesday/.env (created with
- * `factory/harness/harness.ts --setup` in your own terminal) — keys never
- * enter chat, arguments or the repository.
+ * Deterministic mode (default) proves the engine plumbing offline. Live mode
+ * loads credentials from ~/.wednesday/.env — keys never enter chat,
+ * arguments or the repository.
  */
 
 function option(args: string[], name: string): string | undefined {

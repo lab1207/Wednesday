@@ -113,8 +113,9 @@ export function updateCrew(
   if (patch.seats !== undefined) s.crews[idx].seats = patch.seats
   // `'policy' in patch` and NOT `patch.policy !== undefined`: a CLEAR is
   // `undefined` on purpose. The old check could not tell "not mentioned"
-  // from "explicitly cleared", so `/team reset` wrote the same policy back
-  // and the team kept working the way the operator had just cleared.
+  // from "explicitly cleared", so `wednesday team set shape auto` wrote the
+  // same policy back and the team kept working the way the operator had
+  // just cleared.
   if ('policy' in patch) s.crews[idx].policy = patch.policy
   saveCrews(s)
   return s.crews[idx]
@@ -225,11 +226,11 @@ export function crewPolicyLines(policy: CrewPolicy | undefined): string[] {
 export const CREW_SHAPES: readonly string[] = ['auto', 'solo', 'duel', 'vote', 'relay']
 
 /**
- * Parse ONE `/team <setting> <value>` into a policy patch (pure).
+ * Parse ONE team policy setting into a policy patch (pure).
  *
  * The grammar is deliberately one word per setting, so it works over a pipe
  * and can be checked without a terminal. Every refusal names the setting
- * and the accepted values: an operator who typed `/team shpae duel` must be
+ * and the accepted values: an operator who typed `shape shpae` must be
  * told what to type, not that something went wrong.
  *
  * A bad value NEVER half-applies: the patch is returned whole or not at all.
@@ -270,19 +271,22 @@ export function parseTeamSetting(
       return { ok: true, patch: { budgetUsd: n } }
     }
     case 'test': {
-      if (!raw) return { ok: false, error: 'Usage: /team test "npm test"' }
+      if (!raw) return { ok: false, error: 'Usage: wednesday team set test "npm test"' }
       return { ok: true, patch: { testCommand: raw } }
     }
     case 'files': {
-      if (!raw) return { ok: false, error: 'Usage: /team files src/a.ts,src/b.ts' }
+      if (!raw) return { ok: false, error: 'Usage: wednesday team set files src/a.ts,src/b.ts' }
       const files = raw.split(',').map(f => f.trim()).filter(Boolean)
       if (files.length === 0) {
-        return { ok: false, error: 'Usage: /team files src/a.ts,src/b.ts' }
+        return { ok: false, error: 'Usage: wednesday team set files src/a.ts,src/b.ts' }
       }
       return { ok: true, patch: { requiredFiles: files } }
     }
     default:
-      return { ok: false, error: `Unknown /team setting: ${setting || '(nothing)'} (shape, repairs, tokens, usd, test, files)` }
+      return {
+        ok: false,
+        error: `Unknown team setting: ${setting || '(nothing)'} (shape, repairs, tokens, usd, test, files)`,
+      }
   }
 }
 

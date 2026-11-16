@@ -8,7 +8,7 @@
  * offer it. The operator's brief closes by offering exactly that: "an
  * automated local script (or pre-commit hook) that automatically catches
  * security flaws in YOUR AI code". Living under `factory/` means
- * `factory/harness/commit-scan.ts` ships, and `scripts/wednesday-scan.ts`
+ * `factory/scan/commit-scan.ts` ships, and `scripts/wednesday-scan.ts`
  * plus `.githooks/pre-commit` become thin wrappers over this one
  * implementation -- so this repo's gate and a user's gate cannot drift.
  *

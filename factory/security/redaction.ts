@@ -2,10 +2,10 @@
  * One redaction rule for every operator-visible error line.
  *
  * Why a module instead of a helper in one layer: errors travel through the
- * CLI, Hermes, the orchestrator, the harness and the dsh host. A secret that
- * appears in a thrown message (a tunnel URL, an API key echoed by a provider,
- * a token in a proxy error) must be scrubbed at every one of those exits, not
- * only in the interactive REPL.
+ * CLI, Hermes, the orchestrator, the MCP server and the dsh host. A secret
+ * that appears in a thrown message (a tunnel URL, an API key echoed by a
+ * provider, a token in a proxy error) must be scrubbed at every one of those
+ * exits, not only in one surface.
  *
  * Two passes:
  *  1. env values whose NAME looks secret-bearing (key/token/password/upstream/

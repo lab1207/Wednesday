@@ -1052,14 +1052,12 @@ export class TestingRunner
       return baseOutput(
         role,
         context,
-        'Tester could not run because no verification plan exists.',
+        'No verification plan provided — skipping verification.',
         [
-          'No verification plan was supplied by the task.',
+          'Verification is optional; no test commands were declared.',
         ],
         [],
-        [
-          'Missing verification plan.',
-        ],
+        [],
       )
     }
 

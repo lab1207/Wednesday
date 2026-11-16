@@ -52,10 +52,13 @@ export const DENY = [
   /^wednesday-theme\//,
   /^AGENTS\.md$/,
   /^factory\/tmp\//,
-  // The Ink renderer was orphaned by the 2026-11-14 harness removal: it imports
-  // deleted modules and cannot run. It is untracked locally, so it must be
-  // denied by name or the exporter (which copies the working tree) ships it.
+  // The terminal-harness renderers were removed on 2026-11-14. The deny rules
+  // stay as a guard: if a stray copy of one of those trees ever appears in the
+  // working tree, the exporter (which copies the working tree) must not ship
+  // a renderer that imports deleted modules.
   /^factory\/tui-ink\//,
+  /^factory\/tui\//,
+  /^factory\/tui-pi\//,
   /(^|\/)\.env/,
   /(^|\/)state\//,
 ]

@@ -40,9 +40,9 @@ const VERBS = new Set([
  * would put repository hygiene behind the task queue, which is the wrong
  * dependency for a thing that must run before a commit exists.
  *
- * The parsing and the report live in `factory/harness/scan-command.ts`, so
- * this verb and the operator-facing `wednesday scan` (the harness bin, which
- * is what `npm i -g` actually installs) are the same code.
+ * The parsing and the report live in `factory/scan/scan-command.ts`, so
+ * this verb and the operator-facing `wednesday scan` (the bin `npm i -g`
+ * actually installs) are the same code.
  *
  *   wednesday scan                  scan the repo you are standing in
  *   wednesday scan --repo DIR       scan another repository
@@ -62,10 +62,13 @@ async function scan(args: string[]): Promise<void> {
  * store and adopts the active crew at startup; nothing about the team is
  * ever chosen by the calling agent.
  *
- *   wednesday team                     list the crews, active marked
- *   wednesday team use <id|name>       make a crew active
+ *   wednesday team                       list the crews, active marked
+ *   wednesday team use <id|name>         make a crew active
  *   wednesday team add <name> coder=model reviewer=model --shape solo
- *   wednesday team show                the active crew in detail
+ *   wednesday team seat <role> <model>   put a different model in one seat
+ *   wednesday team set <setting> <value> shape | repairs | tokens | usd | test | files
+ *   wednesday team delete <id|name>      remove a crew
+ *   wednesday team show                  the active crew in detail
  */
 async function team(args: string[]): Promise<void> {
   const store = await import('./teams/crew-store')
@@ -108,7 +111,18 @@ async function team(args: string[]): Promise<void> {
 
   if (verb === 'add') {
     const name = rest[0]
-    const seats = rest.slice(1).filter(item => !item.startsWith('--'))
+
+    const shapeAt = rest.indexOf('--shape')
+    const shape = shapeAt >= 0 ? rest[shapeAt + 1] : undefined
+
+    // The VALUE after --shape is not a seat. Before this, `--shape solo`
+    // reached the parser as a seat named "solo" and the add failed with
+    // "A seat must be role=model, got: solo".
+    const seats = rest
+      .slice(1)
+      .map((item, index) => ({ item, index: index + 1 }))
+      .filter(({ item, index }) => !item.startsWith('--') && index !== shapeAt + 1)
+      .map(({ item }) => item)
 
     if (!name || seats.length === 0) {
       throw new Error('Usage: wednesday team add <name> role=model [role=model...] [--shape solo|auto|duel|vote|relay]')
@@ -122,8 +136,9 @@ async function team(args: string[]): Promise<void> {
       return { role: seat.slice(0, at), model: seat.slice(at + 1) }
     })
 
-    const shapeAt = rest.indexOf('--shape')
-    const shape = shapeAt >= 0 ? rest[shapeAt + 1] : undefined
+    if (shape && !['solo', 'auto', 'duel', 'vote', 'relay'].includes(shape)) {
+      throw new Error(`Unknown shape: ${shape}. Use solo, auto, duel, vote or relay.`)
+    }
 
     const crew = store.addCrew(
       name,
@@ -133,6 +148,72 @@ async function team(args: string[]): Promise<void> {
 
     store.setActiveCrew(crew.id)
     console.log(`added and activated: ${crew.name} (${crew.id})`)
+
+    return
+  }
+
+  if (verb === 'seat') {
+    const [role, model] = rest
+
+    if (!role || !model) {
+      throw new Error('Usage: wednesday team seat <role> <model>')
+    }
+
+    const crew = store.activeCrew()
+
+    if (!crew) {
+      throw new Error('No active crew. Add one: wednesday team add <name> coder=<model>')
+    }
+
+    const seats = crew.seats.some(seat => seat.role === role)
+      ? crew.seats.map(seat => (seat.role === role ? { ...seat, model } : seat))
+      : [...crew.seats, { role, model }]
+
+    store.updateCrew(crew.id, { seats })
+    console.log(`${crew.name}: ${role} -> ${model}`)
+    console.log('Restart the MCP server (or reconnect your harness) to adopt it.')
+
+    return
+  }
+
+  if (verb === 'set') {
+    const [setting, ...valueParts] = rest
+    const value = valueParts.join(' ').trim()
+
+    if (!setting) {
+      throw new Error('Usage: wednesday team set <shape|repairs|tokens|usd|test|files> <value>')
+    }
+
+    const crew = store.activeCrew()
+
+    if (!crew) {
+      throw new Error('No active crew. Add one: wednesday team add <name> coder=<model>')
+    }
+
+    const parsed = store.parseTeamSetting(setting, value)
+
+    if (!parsed.ok) throw new Error(parsed.error)
+
+    const policy = { ...(crew.policy ?? {}), ...parsed.patch }
+    store.updateCrew(crew.id, { policy })
+    console.log(`${crew.name}: ${setting} -> ${value}`)
+    console.log('Restart the MCP server (or reconnect your harness) to adopt it.')
+
+    return
+  }
+
+  if (verb === 'delete' || verb === 'rm') {
+    const wanted = rest[0]
+
+    if (!wanted) throw new Error('Missing crew id or name: wednesday team delete <id|name>')
+
+    const crews = store.loadCrews()
+    const crew = crews.crews.find(item => item.id === wanted || item.name === wanted)
+
+    if (!crew) throw new Error(`No such crew: ${wanted}`)
+
+    store.deleteCrew(crew.id)
+    console.log(`deleted: ${crew.name} (${crew.id})`)
 
     return
   }
@@ -244,8 +325,37 @@ wednesday setup — connect the MCP server to your harness
   console.log(setupModule.formatOutcome(outcome, dryRun ? 'dry' : 'live'))
 }
 
+/**
+ * The tsx ESM loader as an absolute file URL (2026-11-15).
+ *
+ * WHY: `bin/wednesday.js` is plain JavaScript and loads this file through
+ * `tsImport`, but every Hermes verb runs in a CHILD process. In a normal
+ * `wednesday create` `process.execArgv` is empty, so the child was a bare
+ * `node hermes.ts` and died on its first extensionless import
+ * (`ERR_MODULE_NOT_FOUND: .../factory/security/redaction`). The tests never
+ * saw it because they run under `node --import tsx`, which the child then
+ * inherited. `--import tsx` also only resolves when the cwd is the checkout,
+ * and a client spawns the server from anywhere, so the child gets the loader
+ * by absolute URL.
+ */
+const TSX_LOADER = (() => {
+  try {
+    return import.meta.resolve('tsx')
+  } catch {
+    return undefined
+  }
+})()
+
 function spawnHermes(verb: string, args: string[], timeoutMs: number) {
-  return spawnSync(process.execPath, [...process.execArgv, HERMES, verb, ...args], {
+  const execArgv = [...process.execArgv]
+  const hasTsxLoader = execArgv.some((arg, index) =>
+    ((arg === '--import' || arg === '--loader') && /tsx/.test(execArgv[index + 1] ?? '')) ||
+    /^--(import|loader)=.*tsx/.test(arg),
+  )
+
+  if (!hasTsxLoader && TSX_LOADER) execArgv.push('--import', TSX_LOADER)
+
+  return spawnSync(process.execPath, [...execArgv, HERMES, verb, ...args], {
     encoding: 'utf8',
     timeout: timeoutMs,
     windowsHide: true,
@@ -342,10 +452,13 @@ factory — operator CLI over the Hermes/Factory contracts (roadmap 11A)
   list   [--status queued|running|completed|failed|cancelled]
   scan   [--repo DIR] [--allow-findings] [--install-hook]
 
-  team                      list the crews (active marked)
-  team use <id|name>        make a crew active
+  team                       list the crews (active marked)
+  team use <id|name>         make a crew active
   team add <name> role=model [role=model...] [--shape solo|auto|duel|vote|relay]
-  team show                 the active crew in detail
+  team seat <role> <model>  put a different model in one seat of the active crew
+  team set <setting> <value> shape | repairs | tokens | usd | test | files
+  team delete <id|name>     remove a crew
+  team show                  the active crew in detail
 
   setup [--client id] [--all] [--dry-run] [--command "<line>"]
                             register the MCP server with your harness
@@ -387,6 +500,20 @@ async function main(): Promise<void> {
   }
 
   const hermesVerb = verb === 'create' ? 'submit' : verb
+
+  // The operator's active crew drives the seats for a CLI run too
+  // (2026-11-15). Before this, only the MCP server called `applyCrew`, so
+  // `wednesday run` silently used the profile's route default and the team
+  // the operator staffed never sat down. `applyCrew` writes the same
+  // FACTORY_CREW_<SEAT>_MODEL slots the MCP server writes, and spawnHermes
+  // passes this process's env to the child, so both surfaces now route
+  // through the same seats.
+  if (verb === 'create' || verb === 'run') {
+    const { activeCrew, applyCrew } = await import('./teams/crew-store')
+    const crew = activeCrew()
+    if (crew) applyCrew(crew)
+  }
+
   print(hermesJson(hermesVerb, rest, verb === 'run' ? 30 * 60 * 1000 : 30000), json)
 }
 

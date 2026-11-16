@@ -2,10 +2,10 @@
  * Chat streaming (2026-10-30, "real chat loop" direction).
  *
  * The providers own talking to a ROLE: one prompt in, one string out,
- * buffered. The operator's TUI chat is a different shape: a conversation
- * (system + prior turns) streamed a delta at a time, over whichever route
- * the operator connected — local/tunnel, OpenRouter, or NVIDIA. This module
- * is that one path for every route, so the harness chat block stays thin.
+ * buffered. A conversation (system + prior turns) streamed a delta at a time
+ * is a different shape, over whichever route the operator connected —
+ * local/tunnel, OpenRouter, or NVIDIA. This module is that one path for
+ * every route, so every caller stays thin.
  *
  * Route resolution mirrors the providers exactly:
  * - local — crewBaseURLForModel (per-model tunnel), placeholder key, Chrome UA.
