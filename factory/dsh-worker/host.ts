@@ -9,6 +9,7 @@ import { DSH_ROOT, WORKER_DIRECTORY, runtimeRoot } from '../paths'
 import { extractTextToolCalls, runTextToolCalls } from './text-tool-calls'
 import { workerProvider } from './provider-route'
 import { redactSecrets } from './secret-redaction'
+import { backfillRuntimeExtras, runtimeExtrasRoot } from './runtime-extras'
 
 /**
  * Factory dsh host (2026-10-30).
@@ -109,6 +110,17 @@ const runtime = runtimeRoot()
 const runtimeWorker = runtime
   ? join(runtime, 'node_modules', '@deepseek-ai', 'dsh-factory-acp-worker', 'lib', 'bin.js')
   : undefined
+
+// The installed runtime closure and this package's worker configuration are
+// versioned independently, so the closure can lack a seam package the
+// configuration names. The vendored seam closes that gap before the worker
+// starts; without it the worker plugin tree fails to load and every task
+// dies at the worker stage.
+if (runtime) {
+  const extrasRoot = runtimeExtrasRoot()
+  const backfillResult = await backfillRuntimeExtras(runtime, extrasRoot)
+  log(`RUNTIME_BACKFILL copied=${backfillResult.copied.length} skipped=${backfillResult.skipped.length} errors=${backfillResult.errors.length}`)
+}
 const workerBin = runtimeWorker && existsSync(runtimeWorker)
   ? runtimeWorker
   : join(DSH_ROOT, 'packages', 'examples', 'factory-acp-worker', 'lib', 'bin.js')
