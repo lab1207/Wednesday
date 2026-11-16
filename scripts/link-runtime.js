@@ -13,7 +13,8 @@
 // Idempotent: safe to re-run on every `npm install`.
 import { existsSync, lstatSync, rmSync } from 'node:fs'
 import { mkdir, symlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const INSTALL_ROOT = fileURLToPath(new URL('../', import.meta.url))
@@ -26,10 +27,23 @@ const LINK_NAMES = ['dsh-app-boot']
 
 function runtimeCandidates() {
   const platform = `${process.platform}-${process.arch}`
-  return [
+  const candidates = [
+    // A non-hoisted install (npm keeps the optional package under ours).
     join(INSTALL_ROOT, 'node_modules', '@lab1207', `wednesday-runtime-${platform}`, 'runtime'),
+    // The normal npm install: optional deps are hoisted to the scope above
+    // us, so `node_modules/@lab1207/wednesday/node_modules/...` does not exist.
+    join(INSTALL_ROOT, '..', `wednesday-runtime-${platform}`, 'runtime'),
     join(INSTALL_ROOT, 'factory', 'dsh-worker', 'deploy', 'runtime'),
   ]
+  // Ask Node itself as the final authority (handles nested/global layouts).
+  try {
+    const require = createRequire(import.meta.url)
+    const manifest = require.resolve(`@lab1207/wednesday-runtime-${platform}/package.json`)
+    candidates.splice(1, 0, join(dirname(manifest), 'runtime'))
+  } catch {
+    // Optional package absent; the fixed candidates and the warning below own it.
+  }
+  return candidates
 }
 
 function findRuntime() {
@@ -75,7 +89,7 @@ async function main() {
   const started = Date.now()
   const runtime = findRuntime()
   if (!runtime) {
-    console.warn('[wednesday] no DSH runtime found (looked for the wednesday-runtime optional package and factory/dsh-worker/deploy/runtime). Task execution will fail until one is provisioned; `wednesday --help` and config still work.')
+    console.warn('[wednesday] no DSH runtime found (looked for the wednesday-runtime optional package, including a hoisted install, and factory/dsh-worker/deploy/runtime). Task execution will fail until one is provisioned; `wednesday --help` and config still work.')
     console.log('[wednesday] install finished degraded in ' + seconds(started) + ' — the terminal works, running a task does not.')
     return
   }
