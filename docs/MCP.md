@@ -1,7 +1,7 @@
 # Wednesday MCP server
 
 Wednesday is an [MCP](https://modelcontextprotocol.io) server that staffs small
-open models as a verified engineering team. The host model in your harness is a
+open models as a verified engineering team. The host model in your client is a
 messenger: it hands a request in, waits, and reports the verdict. The seats —
 architect, planner, coder, tester, reviewer, vision, bug-hunter,
 security-audit — stay inside Wednesday.
@@ -33,7 +33,7 @@ or run `./install.sh` (macOS/Linux), which clones, installs and links.
 
 ## Register with a client
 
-One command registers every harness it finds on the machine:
+One command registers every MCP client it finds on the machine:
 
 ```bash
 wednesday setup                     # every client found
@@ -122,10 +122,10 @@ suite asserts that none can appear.
 ### The run lifecycle
 
 ```text
-you → harness → wednesday_run("add a quantity input to the cart page")
+you → client → wednesday_run("add a quantity input to the cart page")
                  ↳ job accepted, id 3f9c…, workspace validated
-harness → wednesday_wait(id)      ↳ working: planner, coder, verification…
-harness → wednesday_result(id)    ↳ completed, tests PASS, files, receipt
+client → wednesday_wait(id)      ↳ working: planner, coder, verification…
+client → wednesday_result(id)    ↳ completed, tests PASS, files, receipt
 ```
 
 `wednesday_wait` exists because clients kill a tool call on their own timeout,
@@ -164,7 +164,7 @@ A crew carries seats, per-seat models, a shape (`solo`, `duel`, `vote`,
 `auto` is the default when a crew declares no shape — the task difficulty
 decides how the team works. A crew changed while a server is running does not
 change that server; the mutating verbs say so ("Restart the MCP server, or
-reconnect your harness, to adopt it").
+reconnect your client, to adopt it").
 
 ## Operator CLI
 
@@ -250,7 +250,7 @@ no dangerous call shape", never "no vulnerability".
 ## Honest limits
 
 1. **The host model may refuse to be a messenger.** Nothing in MCP can force
-   it; the prompt lowers the odds. A real run in a real harness is the only
+   it; the prompt lowers the odds. A real run in a real client is the only
    evidence.
 2. **Jobs live in memory.** A client restart loses job ids, though the Hermes
    task records and event log survive on disk.

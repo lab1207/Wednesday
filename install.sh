@@ -78,7 +78,7 @@ cat <<'EOF'
 
 Next:
   wednesday setup
-  # registers the MCP server with every harness it finds (Claude Code,
+  # registers the MCP server with every MCP client it finds (Claude Code,
   # Claude Desktop, Codex, Cursor, OpenCode), backing up each file it touches.
   #   wednesday setup --dry-run   print the plan, write nothing
   #   wednesday setup --all       also create configs for clients not installed

@@ -1,28 +1,41 @@
+<div align="center">
+
 # Wednesday
 
 **One MCP tool in. A whole verified engineering team inside.**
 
-[![website](https://img.shields.io/badge/website-wednesdaylabs.pages.dev-5D43A0)](https://wednesdaylabs.pages.dev/)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
-[![MCP](https://img.shields.io/badge/MCP-stdio-5C4EE5)](https://modelcontextprotocol.io)
-[![tests](https://img.shields.io/badge/locked%20test-PASS-brightgreen)](CONTRIBUTING.md#tests)
+[![website](https://img.shields.io/badge/website-wednesdaylabs.pages.dev-8F6BFF?style=flat-square)](https://wednesdaylabs.pages.dev/)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen?style=flat-square)](package.json)
+[![MCP](https://img.shields.io/badge/MCP-stdio-5C4EE5?style=flat-square)](https://modelcontextprotocol.io)
+[![tests](https://img.shields.io/badge/locked%20test-PASS-brightgreen?style=flat-square)](CONTRIBUTING.md#tests)
+
+[Website](https://wednesdaylabs.pages.dev/) ·
+[Quick start](#quick-start) ·
+[The MCP surface](#the-mcp-surface) ·
+[How a run works](#how-a-run-works) ·
+[Repository](#repository-at-a-glance) ·
+[Issues](https://github.com/lab1207/Wednesday/issues)
+
+**Works inside:** Claude Code · Codex · Cursor · OpenCode · Claude Desktop
+
+</div>
 
 Wednesday is a free, open-source (Apache 2.0) **MCP server** that turns a
 plain-language request into planned, verified engineering work. You connect it
-to the harness you already use — Claude Code, Codex, Cursor, OpenCode, Claude
+to the client you already use — Claude Code, Codex, Cursor, OpenCode, Claude
 Desktop — and Wednesday staffs a whole team behind it: planning, engineering
 roles, real verification, and repair until the tests pass. You bring the models,
 hosted or running on your own hardware.
 
 **Small open models, staffed as a coding team.**
 
-## No harness. Wednesday is the team your harness can call.
+## Wednesday is the team your client can call.
 
-There is no app to install, no TUI, no terminal to learn. Wednesday speaks
-[MCP](https://modelcontextprotocol.io) over stdio, so it plugs into the client
-you already work in. The host model does not do the work — it hands the request
-in, waits, and reports the verdict.
+Wednesday speaks [MCP](https://modelcontextprotocol.io) over stdio, so it plugs
+into the editor or agent you already work in: Claude Code, Codex, Cursor,
+OpenCode, Claude Desktop. The host model does not do the work — it hands the
+request in, waits, and reports the verdict.
 
 That is deliberate, and it is the whole design:
 
@@ -56,9 +69,9 @@ Then connect it:
 wednesday setup
 ```
 
-One command, every harness it finds — see [Connect your harness](#connect-your-harness).
+One command, every MCP client it finds — see [Connect your client](#connect-your-client).
 
-## Connect your harness
+## Connect your client
 
 `wednesday setup` registers the server and prints exactly what it changed:
 
@@ -140,10 +153,10 @@ also emits `notifications/progress` when the request carries a
 `progressToken`, so a client can show the team moving.
 
 ```text
-you → harness → wednesday_run("add a quantity input to the cart page")
-                  ↳ job accepted, id 3f9c…, workspace validated
-harness → wednesday_wait(id)      ↳ working: planner, coder, verification…
-harness → wednesday_result(id)    ↳ completed, tests PASS, files, receipt
+you → client → wednesday_run("add a quantity input to the cart page")
+                 ↳ job accepted, id 3f9c…, workspace validated
+client → wednesday_wait(id)       ↳ working: planner, coder, verification…
+client → wednesday_result(id)     ↳ completed, tests PASS, files, receipt
 ```
 
 ## Staff the team
@@ -187,7 +200,7 @@ checks:
    with its evidence.
 
 Nothing is committed for you. Over MCP the team runs unattended inside its
-workspace; a harness-side approval gate wired to MCP elicitation is not built
+workspace; a client-side approval gate wired to MCP elicitation is not built
 yet, and this README will say so until it is.
 
 ### Verification is authoritative
@@ -273,7 +286,7 @@ name tags a per-model total could not tell you the same model did three jobs.
 For a locally hosted model the real cost is GPU-minutes, so wall clock is on
 the same line.
 
-The factory will not invent a price. It knows the free tier costs nothing and
+Wednesday will not invent a price. It knows the free tier costs nothing and
 it knows nothing else, because **your contract is what you pay**. Set your own
 price and the receipts become real:
 
@@ -316,7 +329,7 @@ folder in and Wednesday finds it:
 ```
 
 A project skill beats an operator skill with the same name. An installed
-package goes through the same audit the factory uses for a skill it did not
+package goes through the same audit Wednesday uses for a skill it did not
 write: an instruction-override directive or a hidden instruction **refuses the
 install** and names what it found. A `.skill` file is a zip holding one skill
 directory; a package that tries to write outside its own folder is refused.
@@ -345,21 +358,6 @@ The same engine, without a client open:
 
 Add `--json` to any verb for machine-readable output.
 
-## Local data
-
-| What | Where |
-| --- | --- |
-| Credentials | `~/.wednesday/.env` |
-| Teams (crews) | `~/.wednesday/state/crews.json` |
-| Task history | `~/.wednesday/state/tasks.json` |
-| Event log | `~/.wednesday/state/events.jsonl` |
-| Your skills | `~/.wednesday/skills/` |
-| MCP servers | `~/.wednesday/state/mcp.json` |
-
-Advanced overrides: `WEDNESDAY_STATE_HOME` moves the state directory;
-`HERMES_TASKS_PATH` and `FACTORY_EVENTS_PATH` select individual files;
-`WEDNESDAY_SKILLS_HOME` moves the skills directory.
-
 ## Keep a secret out of your history
 
 Wednesday ships the same security gate it applies to every run, as a command
@@ -383,13 +381,64 @@ never "no vulnerability". Escape hatches are loud rather than silent —
 says it is now part of the history; `git commit --no-verify` bypasses
 everything.
 
+## Local data
+
+| What | Where |
+| --- | --- |
+| Credentials | `~/.wednesday/.env` |
+| Teams (crews) | `~/.wednesday/state/crews.json` |
+| Task history | `~/.wednesday/state/tasks.json` |
+| Event log | `~/.wednesday/state/events.jsonl` |
+| Your skills | `~/.wednesday/skills/` |
+| MCP servers | `~/.wednesday/state/mcp.json` |
+
+Advanced overrides: `WEDNESDAY_STATE_HOME` moves the state directory;
+`HERMES_TASKS_PATH` and `FACTORY_EVENTS_PATH` select individual files;
+`WEDNESDAY_SKILLS_HOME` moves the skills directory.
+
+## Repository at a glance
+
+```text
+wednesday/
+├─ bin/                      wednesday + wednesday-mcp entry points
+├─ factory/
+│  ├─ mcp/                   the MCP server: 7 coarse tools, no seats exposed
+│  ├─ service.ts             FactoryService — the only execution path
+│  ├─ hermes/                Operations Manager and the task store
+│  ├─ orchestrator/          dispatch sequence and stage runner
+│  ├─ teams/                 crews, seats, shapes, adoption
+│  ├─ model-router/          probes, capability scores, routing, local servers
+│  ├─ verification/          real commands, project gates, receipts
+│  ├─ executor/              sandboxed writes and shell-free fenced tools
+│  ├─ security/              redaction, secret scan, package surface
+│  ├─ knowledge/             skills, attached MCP servers, context
+│  ├─ openhands/             Software HQ connector
+│  └─ dsh-worker/            isolated execution on the factory floor
+├─ crewai/                   the engineering-team layer
+├─ ecc/                      the engineering playbook
+├─ scripts/                  public export and the claim / scan tests
+├─ shared/                   cross-layer schemas, config, state
+├─ docs/                     architecture, the MCP surface, design records
+├─ site/                     the website as built (served from its own clone)
+├─ bin/wednesday.js          operator CLI
+├─ bin/wednesday-mcp.js      stdio MCP server
+├─ install.sh                clone + install + link, one step
+└─ AGENTS.md                 how the project is built and closed
+```
+
+The engine and the surface are separate on purpose: `factory/` is the machinery,
+`bin/` is the two doors into it — a human-sized CLI and a model-sized MCP
+server. Nothing in `bin/` orchestrates anything; it calls the same
+`FactoryService` the tests call.
+
 ## Documentation
 
-- [docs/MCP.md](docs/MCP.md) — the MCP surface, the run lifecycle, crews and providers
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the engine behind the surface
-- [ROADMAP.md](ROADMAP.md) — where the project is going
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development setup, tests and PR rules
-- [SECURITY.md](SECURITY.md) — vulnerability disclosure
+- [`docs/MCP.md`](docs/MCP.md) — the MCP surface, the run lifecycle, crews and providers
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the engine behind the surface
+- [`ROADMAP.md`](ROADMAP.md) — where the project is going
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup, tests and PR rules
+- [`SECURITY.md`](SECURITY.md) — vulnerability disclosure
+- [The website](https://wednesdaylabs.pages.dev/docs/) — the operator-facing docs
 
 ## FAQ
 
@@ -409,9 +458,9 @@ stay in `~/.wednesday/.env`.
 No, on purpose. The surface is coarse so the host model stays a messenger and
 the small-model team stays the team. See `docs/MCP.md`.
 
-**Is this a terminal app?**
-No. The terminal harness was retired on 2026-11-14. The product is the MCP
-server plus a small operator CLI.
+**Do I need a new app or a UI?**
+No. Wednesday is the MCP server plus a small operator CLI. The interface is the
+client you already use.
 
 ## Open source, and only open source
 
@@ -439,11 +488,10 @@ See `CONTRIBUTING.md` for the test map, issue/PR rules, and the ground rules
 
 ## Status
 
-**Beta.** The product is the MCP server plus a small operator CLI; the terminal
-harness was retired on 2026-11-14. The engine behind it — plan, build, real
-verification, repair until green, review, per-seat receipts, central secret
-redaction, shell-free fenced tools — is unchanged and still guarded by the same
-tests. Next: `wednesday setup`, one live run inside a real harness.
+**Beta.** The product is the MCP server plus a small operator CLI. The engine —
+plan, build, real verification, repair until green, review, per-seat receipts,
+central secret redaction, shell-free fenced tools — is unchanged and still
+guarded by the same tests. Next: one live run inside a real client.
 
 Licensed under [Apache 2.0](LICENSE). Third-party notices:
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
