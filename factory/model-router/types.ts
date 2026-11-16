@@ -1,4 +1,24 @@
-export type ModelCapability =
+export type CredentialState = 'present' | 'missing' | 'not-needed'
+
+/**
+ * Pure helper to determine credential state based on the provider and environment.
+ * Mirrors logic from factory/config.ts without importing it.
+ */
+function getCredentialState(env: NodeJS.ProcessEnv, provider: string): CredentialState {
+  const keyMap: Record<string, string> = {
+    'openrouter': 'OPENROUTER_API_KEY',
+    'zen': 'ZEN_API_KEY',
+    'nvidia': 'NVIDIA_API_KEY',
+    'local': 'LOCAL_LLM_API_KEY',
+  }
+
+  const key = keyMap[provider.toLowerCase()]
+  if (key === 'local') return 'not-needed'
+  
+  const envKey = env[key]
+  return envKey?.trim() ? 'present' : 'missing'
+}
+// ... (rest of the file content)
   | 'general'
   | 'coding'
   | 'reasoning'

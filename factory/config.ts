@@ -182,7 +182,7 @@ function modelBlocker(env: NodeJS.ProcessEnv): ConfigBlocker | null {
     return {
       kind: 'model',
       message: 'Choose a model for the OpenRouter route',
-      remedy: `Run /model in the harness and pick one, or run wednesday --setup. ${RESTART}`,
+      remedy: `Pick a model in your client, or run wednesday --setup. ${RESTART}`,
     }
   }
   // A malformed id is a configuration fault, not a crash: it fails the same
@@ -281,7 +281,7 @@ export function requireLiveConfig(): void {
 }
 
 export function safeError(error: unknown): string {
-  // One rule for every exit (CLI, Hermes, harness, connect, fatal guard):
+  // One rule for every exit (CLI, Hermes, clients, connect, fatal guard):
   // secret-shaped env values, tunnel HOSTS, bearer tokens, key shapes and
   // secret query params are all scrubbed. See factory/security/redaction.ts.
   return redactSensitiveText(error instanceof Error ? error.message : String(error))

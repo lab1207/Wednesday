@@ -171,7 +171,7 @@ async function team(args: string[]): Promise<void> {
 
     store.updateCrew(crew.id, { seats })
     console.log(`${crew.name}: ${role} -> ${model}`)
-    console.log('Restart the MCP server (or reconnect your harness) to adopt it.')
+    console.log('Restart the MCP server (or reconnect your client) to adopt it.')
 
     return
   }
@@ -197,7 +197,7 @@ async function team(args: string[]): Promise<void> {
     const policy = { ...(crew.policy ?? {}), ...parsed.patch }
     store.updateCrew(crew.id, { policy })
     console.log(`${crew.name}: ${setting} -> ${value}`)
-    console.log('Restart the MCP server (or reconnect your harness) to adopt it.')
+    console.log('Restart the MCP server (or reconnect your client) to adopt it.')
 
     return
   }
@@ -239,13 +239,13 @@ async function team(args: string[]): Promise<void> {
 }
 
 /**
- * `wednesday setup` — register the MCP server with the operator's harness.
+ * `wednesday setup` — register the MCP server with the operator's clients.
  *
  * WHY A LOCAL VERB: registration writes a file on this machine. The Hermes
  * task store has nothing to do with it, and making it a task would put
  * onboarding behind the queue.
  *
- *   wednesday setup                     every detected harness
+ *   wednesday setup                     every detected client
  *   wednesday setup --client cursor     one of them
  *   wednesday setup --all               also create configs for absent clients
  *   wednesday setup --dry-run           print the plan, write nothing
@@ -256,7 +256,7 @@ async function setup(args: string[]): Promise<void> {
 
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-wednesday setup — connect the MCP server to your harness
+wednesday setup — connect the MCP server to your client
 
   wednesday setup                        every client found on this machine
   wednesday setup --client <id>          one client (repeatable or comma-separated)
@@ -461,16 +461,16 @@ factory — operator CLI over the Hermes/Factory contracts (roadmap 11A)
   team show                  the active crew in detail
 
   setup [--client id] [--all] [--dry-run] [--command "<line>"]
-                            register the MCP server with your harness
+                            register the MCP server with your client
 
 Add --json to any command for machine-readable output (raw Hermes JSON).
 Config: HERMES_TASKS_PATH, FACTORY_EVENTS_PATH, FACTORY_EXECUTION_MODE.
-The MCP server adopts the active crew at startup: connect any harness to it.
+The MCP server adopts the active crew at startup: connect any MCP client to it.
 `)
   process.exit(0)
 }
 
-async function main(): Promise<void> {
+  await loadConfig()
   const argv = process.argv.slice(2)
   const verb = argv[0]
   if (!verb || verb === '--help' || verb === 'help') usage()

@@ -462,12 +462,10 @@ the small-model team stays the team. See `docs/MCP.md`.
 No. Wednesday is the MCP server plus a small operator CLI. The interface is the
 client you already use.
 
-## Open source, and only open source
+## Open source
 
-This repository is the free core — all of it. There is no hidden "pro" build
-and no license-flag gating: everything here is Apache 2.0. Paid or commercial
-work, if it exists, is built and released separately and never lands in this
-repository.
+Wednesday is Apache 2.0, and the whole core lives in this repository. Read it,
+run it, change it, ship it.
 
 - Website: <https://wednesdaylabs.pages.dev>
 - Issues: <https://github.com/lab1207/Wednesday/issues>
@@ -488,9 +486,9 @@ See `CONTRIBUTING.md` for the test map, issue/PR rules, and the ground rules
 
 ## Status
 
-**Beta.** The product is the MCP server plus a small operator CLI. The engine —
-plan, build, real verification, repair until green, review, per-seat receipts,
-central secret redaction, shell-free fenced tools — is unchanged and still
+**Shipped.** The product is the MCP server plus a small operator CLI. The
+engine — plan, build, real verification, repair until green, review, per-seat
+receipts, central secret redaction, shell-free fenced tools — is complete and
 guarded by the same tests. Next: one live run inside a real client.
 
 Licensed under [Apache 2.0](LICENSE). Third-party notices:

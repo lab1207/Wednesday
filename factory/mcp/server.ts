@@ -1,10 +1,9 @@
 /**
  * WEDNESDAY OVER MCP (2026-11-14).
  *
- * Wednesday is not a harness any more. It is a capability a harness connects
- * to, the way it connects to any other MCP server: one `npx` command, a few
- * lines of config, and the operator keeps the terminal, editor or desktop
- * app they already live in.
+ * Wednesday is an MCP server. It is a capability an MCP client connects to,
+ * the way it connects to any other MCP server: one `npx` command, a few lines
+ * of config, and the operator keeps the editor or app they already work in.
  *
  * WHAT CROSSES THE WIRE, AND WHAT DOES NOT: the outside model is a
  * MESSENGER. It sends a sentence and reports what comes back. The seats -
@@ -21,7 +20,7 @@
  * because one stray `console.log` corrupts the stream and the client dies.
  */
 
-import { createInterface } from 'node:readline'
+import { loadConfig } from '../config'
 
 import { readFile } from 'node:fs/promises'
 
@@ -81,9 +80,9 @@ let progressCounter = 0
  * The crew this process adopted at startup.
  *
  * The operator staffs a team once, in the shared state home, and every
- * harness that connects should get THAT team - not a second roster invented
+ * client that connects should get THAT team - not a second roster invented
  * by the MCP layer. `applyCrew` writes the same env slots the terminal
- * harness writes, so the engine reads one truth either way.
+ * client writes, so the engine reads one truth either way.
  */
 let adoptedCrewId: string | null = null
 
@@ -840,7 +839,7 @@ async function loadVersion(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await loadVersion()
+  await loadConfig()
 
   adoptTeam()
 
@@ -864,7 +863,7 @@ async function main(): Promise<void> {
   })
 
   process.stderr.write(
-    `wednesday mcp ${serverVersion} ready (stdio)\n`,
+    `wednesday mcp ready (stdio)\n`,
   )
 }
 

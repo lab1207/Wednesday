@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * `wednesday setup` — register the MCP server with the harness the operator
+ * `wednesday setup` — register the MCP server with the clients the operator
  * already uses (2026-11-15).
  *
  * WHY THIS EXISTS: on 2026-11-14 the product became an MCP server, and the
@@ -631,7 +631,7 @@ export function formatOutcome(outcome: SetupOutcome, stream: 'dry' | 'live'): st
 
   if (outcome.results.length === 0) {
     lines.push('')
-    lines.push('  No harness found on this machine. Configure one anyway:')
+    lines.push('  No MCP client found on this machine. Configure one anyway:')
     lines.push('    wednesday setup --all          every known client')
     lines.push('    wednesday setup --client cursor   only Cursor')
   }
