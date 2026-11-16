@@ -20,7 +20,7 @@
  * because one stray `console.log` corrupts the stream and the client dies.
  */
 
-import { loadConfig } from '../config'
+import { createInterface } from 'node:readline'
 
 import { readFile } from 'node:fs/promises'
 
@@ -839,7 +839,7 @@ async function loadVersion(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await loadConfig()
+  await loadVersion()
 
   adoptTeam()
 
