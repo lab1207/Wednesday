@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { DSH_ROOT, WORKER_DIRECTORY, runtimeRoot } from '../paths'
-import { extractFencedToolCalls, runFencedToolCalls } from './fenced-tools'
+import { extractTextToolCalls, runTextToolCalls } from './text-tool-calls'
 import { workerProvider } from './provider-route'
 import { redactSecrets } from './secret-redaction'
 
@@ -354,16 +354,17 @@ try {
 
   const answer = fold.join('').trim()
 
-  // Fenced-tool fallback (2026-10-31 live-run finding): a small model can
-  // emit its tool call as a ```json block in plain text. Those never execute
+  // Text-tool fallback (2026-10-31 live-run finding): a small model can
+  // emit its tool call as TEXT — a ```json block, or the delimited
+  // pseudo-JSON form `write{file_path:<|"|>…<|"|>}`. Those never execute
   // inside the worker, so run them here, confined to the task workspace, and
   // append the transcript so the next turn sees what actually happened.
   let finalAnswer = answer
   if (!sawNativeToolCall) {
-    const fenced = extractFencedToolCalls(answer)
-    if (fenced.length > 0) {
-      log(`FENCED_TOOL_FALLBACK calls=${fenced.length}`)
-      const transcript = await runFencedToolCalls(taskWorkspace, fenced, (call, status) => {
+    const textCalls = extractTextToolCalls(answer)
+    if (textCalls.length > 0) {
+      log(`TEXT_TOOL_FALLBACK calls=${textCalls.length}`)
+      const transcript = await runTextToolCalls(taskWorkspace, textCalls, (call, status) => {
         // The command the model asked for, and whether it ran. The arguments
         // carry the path or the command line, in the shapes the small models
         // actually emit.
@@ -378,7 +379,7 @@ try {
           status,
         })
       })
-      finalAnswer = `${answer}\n\n[fenced tool calls executed by host]\n${transcript}`
+      finalAnswer = `${answer}\n\n[text tool calls executed by host]\n${transcript}`
     }
   }
 

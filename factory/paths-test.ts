@@ -25,12 +25,21 @@ try {
   const stateHome = join(directory, 'profile state')
   const env = { ...process.env, FACTORY_EXECUTION_MODE: 'deterministic', WEDNESDAY_STATE_HOME: stateHome }
   for (const name of ['HERMES_TASKS_PATH', 'FACTORY_EVENTS_PATH', 'HARNESS_WORKSPACE', 'WEDNESDAY_DSH_HOME', 'FACTORY_CODER_PROVIDER']) delete env[name]
+  // The CLI takes a verb, then the objective and its checks (2026-11-16:
+  // this test still spoke the pre-MCP dialect — a bare objective and
+  // `--test`/`--required-file` — so it failed at argument parsing and
+  // proved nothing about a relocated install).
+  const created = spawnSync(process.execPath, [join(relocated, 'bin', 'wednesday.js'),
+    'create', '--id', 'portable-001', '--workspace', workspace,
+    '--objective', 'Create portable.txt containing exactly PORTABLE_OK.',
+    '--tests', `node -e "require('node:assert/strict').equal(require('node:fs').readFileSync('portable.txt','utf8').trim(),'PORTABLE_OK')"`,
+    '--required-files', 'portable.txt'], { cwd: workspace, env, encoding: 'utf8', timeout: 120000 })
+  assert.equal(created.status, 0, created.stderr || created.stdout)
   const child = spawnSync(process.execPath, [join(relocated, 'bin', 'wednesday.js'),
-    'Create portable.txt containing exactly PORTABLE_OK.', '--test',
-    `node -e "require('node:assert/strict').equal(require('node:fs').readFileSync('portable.txt','utf8').trim(),'PORTABLE_OK')"`,
-    '--required-file', 'portable.txt'], { cwd: workspace, env, input: 'y\n', encoding: 'utf8', timeout: 120000 })
+    'run', '--id', 'portable-001'], { cwd: workspace, env, encoding: 'utf8', timeout: 300000 })
   assert.equal(child.status, 0, child.stderr || child.stdout)
-  assert.match(child.stdout, /task.completed/)
+  assert.match(child.stdout, /result: completed/)
+  assert.match(child.stdout, /files: portable\.txt/)
   assert.equal((await readFile(join(workspace, 'portable.txt'), 'utf8')).trim(), 'PORTABLE_OK')
   const store = JSON.parse(await readFile(join(stateHome, 'tasks.json'), 'utf8'))
   assert.equal(store.tasks.length, 1)

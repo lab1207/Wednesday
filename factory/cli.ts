@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { redactSensitiveText } from './security/redaction'
+import { loadConfig } from './config'
 import type { ClientId } from './setup'
 
 /**
@@ -471,6 +472,10 @@ The MCP server adopts the active crew at startup: connect any MCP client to it.
 }
 
 async function main(): Promise<void> {
+  // The operator's profile (~/.wednesday/.env) holds the provider keys and
+  // the local base URL. Without this the CLI sees none of them, so a run
+  // cannot reach any configured route. loadConfig never prints a value.
+  await loadConfig()
   const argv = process.argv.slice(2)
   const verb = argv[0]
   if (!verb || verb === '--help' || verb === 'help') usage()

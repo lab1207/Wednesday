@@ -1,5 +1,6 @@
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 
@@ -15,13 +16,40 @@ export const HOST = join(WORKER_DIRECTORY, 'host.ts')
  * `wednesday-runtime-*` optional package first, the provisioned dev
  * closure second. Undefined when neither exists (fresh checkout without
  * provisioning, or a bare npm install before the runtime package ships).
+ *
+ * npm hoists an optional dependency out of the package that asks for it, so
+ * the runtime usually sits in the SCOPE above the package
+ * (`node_modules/@lab1207/wednesday-runtime-*`), not inside it. Both
+ * layouts are checked, and Node itself is asked as the final authority.
+ *
+ * @param installRoot - the package root; defaults to this package.
+ * @param workerDirectory - the worker directory; defaults to this package's.
+ * @returns the runtime root, or undefined when no runtime is installed.
  */
-export function runtimeRoot(): string | undefined {
+export function runtimeRoot(
+  installRoot: string = INSTALL_ROOT,
+  workerDirectory: string = WORKER_DIRECTORY,
+): string | undefined {
   const platform = `${process.platform}-${process.arch}`
-  for (const root of [
-    join(INSTALL_ROOT, 'node_modules', '@lab1207', `wednesday-runtime-${platform}`, 'runtime'),
-    join(WORKER_DIRECTORY, 'deploy', 'runtime'),
-  ]) {
+  const candidates = [
+    // A non-hoisted install (npm keeps the optional package under ours).
+    join(installRoot, 'node_modules', '@lab1207', `wednesday-runtime-${platform}`, 'runtime'),
+    // The normal npm install: optional deps are hoisted to the scope above
+    // us, so the nested path above does not exist.
+    join(installRoot, '..', `wednesday-runtime-${platform}`, 'runtime'),
+    join(workerDirectory, 'deploy', 'runtime'),
+  ]
+  // Ask Node itself as the final authority. The require is created FROM the
+  // install root, so it resolves exactly the way Node resolves the runtime
+  // for the installed package — nested, hoisted or global.
+  try {
+    const require = createRequire(join(installRoot, 'package.json'))
+    const manifest = require.resolve(`@lab1207/wednesday-runtime-${platform}/package.json`)
+    candidates.splice(1, 0, join(dirname(manifest), 'runtime'))
+  } catch {
+    // Optional package absent; the fixed candidates and DSH_ROOT own it.
+  }
+  for (const root of candidates) {
     if (existsSync(join(root, 'node_modules', '@deepseek-ai', 'dsh-app-boot'))) return root
   }
   return undefined

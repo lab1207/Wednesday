@@ -117,6 +117,15 @@ await new Promise<void>(resolve => { fake.server.once('listening', resolve) })
 
 // The executor hands the host child the ambient environment plus the route;
 // the local provider reads the base URL from here.
+//
+// The ROUTE is named explicitly (2026-11-16). The router registers the
+// FACTORY_LLM_PROVIDER route first and falls back to openrouter when no
+// route is named — and the worker then asks for an OpenRouter model with no
+// credential, so the failure lands in the worker's credential service
+// instead of in the executor. The executor passes the chosen route to the
+// host as DSH_LLM_PROVIDER, so naming the route here is what makes the
+// offline proof offline.
+process.env.FACTORY_LLM_PROVIDER = 'local'
 process.env.LOCAL_LLM_BASE_URL = fake.baseURL()
 process.env.LOCAL_LLM_MODEL = 'executor-fake'
 process.env.LOCAL_LLM_API_KEY = 'local'
