@@ -27,6 +27,7 @@ import { readFile } from 'node:fs/promises'
 import {
   cancelJob,
   getJob,
+  initJobs,
   jobView,
   listJobs,
   submitRun,
@@ -962,6 +963,10 @@ async function main(): Promise<void> {
   await loadConfig()
 
   adoptTeam()
+
+  // Reload the job registry before serving, so a job id a client held
+  // before this process started still answers status/wait/result.
+  await initJobs()
 
   // A client that walks away closes our stdout. That is a normal shutdown,
   // not a crash, and it must not print a stack trace into the client's log.

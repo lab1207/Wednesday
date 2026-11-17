@@ -167,7 +167,7 @@ function delimitedCall(text: string, headEnd: number, name: string): TextToolCal
     const key = match[1]
     const value = match[2]
     if (key === undefined || value === undefined) break
-    args[key] = value
+    args[key] = maybeUnescape(value)
     pos += match[0].length
   }
   if (Object.keys(args).length === 0) return undefined
@@ -206,11 +206,32 @@ function parenthesizedCall(text: string, open: number, name: string): TextToolCa
     if (quote !== "'" && quote !== '"') return undefined
     const value = quotedValue(text, pos)
     if (!value) return undefined
-    args[key[0]] = value.text
+    args[key[0]] = maybeUnescape(value.text)
     pos = value.end
   }
   if (Object.keys(args).length === 0) return undefined
   return { name: name.toLowerCase(), args }
+}
+
+/**
+ * A model that JSON-escapes its whole argument writes \" and \n runs into
+ * the raw value (observed 2026-11-17: a text-emitted write of package.json
+ * landed with literal backslashes, so the file was invalid JSON and every
+ * later node call in that workspace died). A model writing SOURCE CODE,
+ * though, has bare double quotes in the value - unescaping that would
+ * corrupt the code. So unescape only when the raw value contains a backslash
+ * AND no bare double quote AND it parses as a JSON string; otherwise the
+ * value is source text and stays byte-exact.
+ */
+function maybeUnescape(raw: string): string {
+  if (!raw.includes('\\')) return raw
+  if (/(?<!\\)"/.test(raw)) return raw
+  try {
+    const parsed: unknown = JSON.parse(`"${raw}"`)
+    return typeof parsed === 'string' ? parsed : raw
+  } catch {
+    return raw
+  }
 }
 
 /**

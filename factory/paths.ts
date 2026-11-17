@@ -60,6 +60,13 @@ export function runtimeRoot(
 export const STATE_HOME = resolve(process.env.WEDNESDAY_STATE_HOME ?? join(homedir(), '.wednesday', 'state'))
 export const TASKS_PATH = resolve(process.env.HERMES_TASKS_PATH ?? join(STATE_HOME, 'tasks.json'))
 export const EVENTS_PATH = resolve(process.env.FACTORY_EVENTS_PATH ?? join(STATE_HOME, 'events.jsonl'))
+/**
+ * The MCP server's job registry (2026-11-17): the jobs a client started,
+ * persisted so `wednesday_status` / `wednesday_wait` / `wednesday_result`
+ * still answer after the server process restarts. Overridable for tests,
+ * same as the other state files.
+ */
+export const JOBS_PATH = resolve(process.env.WEDNESDAY_JOBS_PATH ?? join(STATE_HOME, 'jobs.json'))
 
 /**
  * WHERE OPERATOR-INSTALLED SKILLS LIVE (2026-11-11).

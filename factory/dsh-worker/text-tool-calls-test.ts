@@ -92,6 +92,28 @@ async function main(): Promise<void> {
   // 3b. an unknown tool name in a heuristic form is not a call
   assert.equal(extractTextToolCalls('teleport(file_path=\'a.ts\')').length, 0)
 
+  // 3c. a value the model JSON-ESCAPED (literal \n and \" runs in the text)
+  // is unescaped on extraction. Observed live 2026-11-17: a text-emitted
+  // write of package.json landed with literal backslashes, so the file was
+  // invalid JSON and every later node call in that workspace died on
+  // "Invalid package config".
+  const escapedParen = 'write(file_path=\'pkg.json\', content="{\\n  \\"name\\": \\"greet-cli\\"\\n}")'
+  const escapedParenCalls = extractTextToolCalls(escapedParen)
+  assert.equal(escapedParenCalls.length, 1)
+  assert.equal(escapedParenCalls[0]?.args.content, '{\n  "name": "greet-cli"\n}')
+
+  const escapedDelimited = `write{file_path:${DELIM}pkg2.json${DELIM},content:${DELIM}{\\n  \\"name\\": \\"x\\"\\n}${DELIM}}`
+  const escapedDelimitedCalls = extractTextToolCalls(escapedDelimited)
+  assert.equal(escapedDelimitedCalls.length, 1)
+  assert.equal(escapedDelimitedCalls[0]?.args.content, '{\n  "name": "x"\n}')
+
+  // 3d. SOURCE CODE is not unescaped: a value with a bare double quote is
+  // code, not a JSON-escaped string, and stays byte-exact even with \n in it.
+  const codeParen = 'write(file_path=\'a.js\', content=\'const s = "a\\nb"\')'
+  const codeCalls = extractTextToolCalls(codeParen)
+  assert.equal(codeCalls.length, 1)
+  assert.equal(codeCalls[0]?.args.content, 'const s = "a\\nb"')
+
   // 4. execution: write then read then bash, confined to the workspace
   const base = await mkdtemp(join(tmpdir(), 'wednesday-text-tool-'))
   try {
@@ -120,6 +142,19 @@ async function main(): Promise<void> {
     const parenTranscript = await runTextToolCalls(base, parenWritten)
     assert.match(parenTranscript, /bytes written/)
     assert.equal(readFileSync(join(base, 'sub', 'from-paren.ts'), 'utf8'), source)
+
+    // 4f. an escaped-JSON write lands on disk as REAL JSON (parses), not as
+    // literal backslash runs — the 2026-11-17 failure mode.
+    const escapedWrite = extractTextToolCalls(escapedParen)
+    const escapedTranscript = await runTextToolCalls(base, escapedWrite)
+    assert.match(escapedTranscript, /bytes written/)
+    const pkg = JSON.parse(readFileSync(join(base, 'pkg.json'), 'utf8')) as { name: string }
+    assert.equal(pkg.name, 'greet-cli')
+
+    // 4g. source code with a bare quote and a \n stays byte-exact on disk.
+    const codeWrite = extractTextToolCalls(codeParen)
+    await runTextToolCalls(base, codeWrite)
+    assert.equal(readFileSync(join(base, 'a.js'), 'utf8'), 'const s = "a\\nb"')
 
     // 4c. an EDIT replaces the old text in place — it does not overwrite the
     // whole file with the replacement.

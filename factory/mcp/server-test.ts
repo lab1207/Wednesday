@@ -1,8 +1,8 @@
 /**
  * Proves the MCP surface end to end, offline.
  *
- * This is not a unit test of the handlers. It spawns the real server the way
- * a harness would, speaks JSON-RPC over its stdin/stdout, and runs a real
+ * This is not a unit test of the handlers. It spawns the real MCP server the
+ * way a client would, speaks JSON-RPC over its stdin/stdout, and runs a real
  * (deterministic) Factory run through Hermes. If this passes, a client can
  * connect and get work done; if stdout ever carries a log line, the parse
  * check fails and the server is unusable in practice.
@@ -175,10 +175,10 @@ async function main(): Promise<void> {
   // honest fixture: no repo, no build system, just the plumbing.
   await mkdir(workspace, { recursive: true })
 
-  // A staffed team, written exactly the way the terminal harness writes it,
+  // A staffed team, written exactly the way the operator CLI writes it,
   // in the state home this server is pointed at. The operator picks the team
-  // once; every harness that connects must get that team, not its own idea of
-  // one. `deterministic-v1` is the only model id deterministic mode can
+  // once; every MCP client that connects must get that team, not its own idea
+  // of one. `deterministic-v1` is the only model id deterministic mode can
   // resolve, so the crew does not silently change the run's outcome.
   const crewId = 'crew_test_twoseat'
 
@@ -356,7 +356,7 @@ async function main(): Promise<void> {
       job_id: pooled.payload.job_id,
     })
 
-    // --- the prompt turns any harness into a messenger -------------------
+    // --- the prompt turns any calling model into a messenger ---------------
     const prompts = await client.request('prompts/list')
 
     assert.deepEqual(

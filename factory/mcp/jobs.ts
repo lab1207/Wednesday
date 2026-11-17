@@ -20,11 +20,21 @@
  * events were invented to fix inside one run. One job at a time is the
  * honest default. Parallelism is a Factory concern (`runMany`), not an MCP
  * one, so it is not invented here.
+ *
+ * PERSISTENCE (2026-11-17): a client may hold a job id across server restarts
+ * - the server process goes away (client reconnect, machine reboot) while the
+ * editor session lives on. The job registry is
+ * therefore written to the state home (`JOBS_PATH`) on every state change and
+ * reloaded by `initJobs()` at startup, so status/wait/result keep answering.
+ * A job that was mid-flight when the process died cannot be resumed from this
+ * layer (nobody is awaiting its Hermes call anymore); it is restored as
+ * `failed` with a pointer to re-submit, never silently dropped and never
+ * left polling forever.
  */
 
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
 
 import {
   runHermesTask,
@@ -51,7 +61,7 @@ import {
   PersistentFactoryEventBus,
 } from '../events'
 
-import { EVENTS_PATH } from '../paths'
+import { EVENTS_PATH, JOBS_PATH } from '../paths'
 
 import type {
   EngineeringResult,
@@ -116,7 +126,11 @@ export interface JobView extends Job {
 
 interface JobRecord {
   job: Job
-  spec: Omit<EngineeringTask, 'id'>
+  /**
+   * Present on live submissions; absent on records restored from disk,
+   * which are always `cancelled` and therefore never reach the spec.
+   */
+  spec?: Omit<EngineeringTask, 'id'>
   controller: AbortController
   /** Cancelled while queued: the run is skipped, never submitted. */
   cancelled: boolean
@@ -126,6 +140,109 @@ interface JobRecord {
 
 const jobs = new Map<string, JobRecord>()
 const order: string[] = []
+
+// ---------------------------------------------------------------------------
+// Persistence across server restarts (2026-11-17)
+// ---------------------------------------------------------------------------
+
+const JOBS_FILE_VERSION = 1
+
+/** Bound the registry file; polling history is not worth unbounded growth. */
+const MAX_PERSISTED_JOBS = 200
+
+interface JobsFile {
+  version: number
+  jobs: Job[]
+}
+
+/**
+ * Writes are chained so two state changes can never interleave one file
+ * write. Failure is a stderr warning, never a thrown error: a poll must not
+ * fail because persistence failed.
+ */
+let persistChain: Promise<void> = Promise.resolve()
+
+function persistJobs(): void {
+  const snapshot: JobsFile = {
+    version: JOBS_FILE_VERSION,
+    jobs: order
+      .map(id => jobs.get(id)?.job)
+      .filter((job): job is Job => job !== undefined)
+      .slice(-MAX_PERSISTED_JOBS),
+  }
+
+  persistChain = persistChain.then(async () => {
+    try {
+      await mkdir(dirname(JOBS_PATH), { recursive: true })
+      const temporary = `${JOBS_PATH}.tmp`
+      await writeFile(
+        temporary,
+        `${JSON.stringify(snapshot, null, 2)}\n`,
+        'utf8',
+      )
+      await rename(temporary, JOBS_PATH)
+    } catch (error) {
+      process.stderr.write(
+        `wednesday mcp: could not persist the job registry: ${messageOf(error)}\n`,
+      )
+    }
+  })
+}
+
+/**
+ * Reload the registry at startup. A job that was queued or running when the
+ * server died is restored as `failed` - its Hermes call died with the
+ * process, so there is nothing to await - and is flagged `cancelled` so the
+ * queue can never pick it up. Terminal jobs restore verbatim, which is what
+ * makes `wednesday_result` answerable for a finished run after a restart.
+ * A missing or unreadable file starts empty; the server must boot regardless.
+ */
+export async function initJobs(): Promise<void> {
+  let raw: string
+
+  try {
+    raw = await readFile(JOBS_PATH, 'utf8')
+  } catch {
+    return
+  }
+
+  let parsed: JobsFile
+
+  try {
+    parsed = JSON.parse(raw) as JobsFile
+  } catch {
+    process.stderr.write(
+      'wednesday mcp: job registry unreadable, starting empty\n',
+    )
+    return
+  }
+
+  const restored =
+    Array.isArray(parsed.jobs) ? parsed.jobs : []
+
+  for (const job of restored.slice(-MAX_PERSISTED_JOBS)) {
+    if (!job || typeof job.id !== 'string') {
+      continue
+    }
+
+    if (!isTerminal(job.state)) {
+      job.state = 'failed'
+      job.error =
+        'interrupted by an MCP server restart; submit the run again with wednesday_run'
+      job.updatedAt = nowIso()
+    }
+
+    jobs.set(job.id, {
+      job,
+      controller: new AbortController(),
+      cancelled: true,
+    })
+    order.push(job.id)
+  }
+
+  // Rewrite the normalized form (cap applied, interrupted jobs marked).
+  persistJobs()
+}
 
 /**
  * The tail of the run chain. Every job appends to it, so jobs execute one
@@ -285,6 +402,7 @@ export async function submitRun(
 
   jobs.set(job.id, record)
   order.push(job.id)
+  persistJobs()
 
   const run = tail.then(
     () => execute(record),
@@ -304,12 +422,14 @@ async function execute(
   if (record.cancelled) {
     job.state = 'cancelled'
     job.updatedAt = nowIso()
+    persistJobs()
 
     return
   }
 
   job.state = 'running'
   job.updatedAt = nowIso()
+  persistJobs()
 
   const startedAt = Date.now()
 
@@ -328,10 +448,12 @@ async function execute(
   }
 
   try {
-    const task: EngineeringTask = {
+    // Restored records carry no spec but are always `cancelled`, so this
+    // line is only ever reached by a live submission.
+    const task = {
       id: `wednesday-${randomUUID()}`,
-      ...record.spec,
-    }
+      ...(record.spec ?? {}),
+    } as EngineeringTask
 
     const hermesTaskId =
       await submitTask({
@@ -387,6 +509,7 @@ async function execute(
 
     job.elapsedMs = Date.now() - startedAt
     job.updatedAt = nowIso()
+    persistJobs()
   }
 }
 
@@ -442,13 +565,14 @@ export function cancelJob(
   }
 
   record.controller.abort()
+  persistJobs()
 
   return record.job
 }
 
 /**
- * The team's last few steps, read from the same event log the terminal
- * harness draws its dock from. Absent or unreadable log = no progress lines;
+ * The team's last few steps, read from the same event log the operator CLI
+ * streams. Absent or unreadable log = no progress lines;
  * a poll must never fail because history is missing.
  */
 export async function progressFor(
