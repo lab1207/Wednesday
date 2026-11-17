@@ -295,8 +295,10 @@ no dangerous call shape", never "no vulnerability".
 1. **The host model may refuse to be a messenger.** Nothing in MCP can force
    it; the prompt lowers the odds. A real run in a real client is the only
    evidence.
-2. **Jobs live in memory.** A client restart loses job ids, though the Hermes
-   task records and event log survive on disk.
+2. **Job ids persist across restarts (2026-11-17).** The registry is written
+   to the state home on every state change and reloaded at startup; a job
+   mid-flight at restart comes back failed with a re-submit pointer, never
+   silently dropped.
 3. **One job at a time.** Deliberate: shared state home, shared workspace, one
    event stream.
 4. **No approvals or elicitation yet.** Over MCP the team runs unattended
